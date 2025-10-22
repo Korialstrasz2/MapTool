@@ -124,7 +124,11 @@ if not defined COMMAND (
 )
 call :log "Running command: !COMMAND!"
 >> "%LOG_FILE%" echo [%DATE% %TIME%] [command] !COMMAND!
-cmd.exe /d /c !COMMAND! >> "%LOG_FILE%" 2>&1
+if "!COMMAND:~0,1!"=="\"" (
+    cmd.exe /d /c ""!COMMAND!"" >> "%LOG_FILE%" 2>&1
+) else (
+    cmd.exe /d /c !COMMAND! >> "%LOG_FILE%" 2>&1
+)
 set "EXITCODE=!ERRORLEVEL!"
 if not "!EXITCODE!"=="0" (
     call :log "Command failed with exit code !EXITCODE!: !COMMAND!"
