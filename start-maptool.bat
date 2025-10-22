@@ -6,15 +6,27 @@ set "REPO_URLS=https://github.com/Korialstrasz2/MapTool.git"
 set "APP_DIR=%SCRIPT_DIR%maptool-app"
 set "PRIMARY_PORT=5173"
 set "FALLBACK_PORT=8010"
+set "ACTIVE_PORT=%PRIMARY_PORT%"
 set "DID_PUSH=0"
 set "LOG_FILE=%SCRIPT_DIR%start-maptool.log"
 set "REPO_URL_USED="
+set "POWERSHELL_AVAILABLE=0"
+set "POWERSHELL_PATH="
+set "BOOTSTRAP_FAILED=0"
+set "COMMAND_TEMP_DIR="
 
 if exist "%LOG_FILE%" del "%LOG_FILE%" >nul 2>nul
 
 call :log "Starting MapTool bootstrap script."
 call :log "Log file: %LOG_FILE%"
+call :log "Bootstrap working directory: %SCRIPT_DIR%"
 call :log "System PATH: %PATH%"
+call :detect_powershell
+if "%POWERSHELL_AVAILABLE%"=="1" (
+    call :log "PowerShell located at %POWERSHELL_PATH%. Command output will be streamed to both the console and %LOG_FILE%."
+) else (
+    call :log "PowerShell was not found. Command output will be captured in %LOG_FILE% only."
+)
 
 if not exist "%APP_DIR%" (
     call :log "Creating application directory at %APP_DIR%..."
@@ -68,7 +80,11 @@ if exist "%APP_DIR%\.git" (
     call :log "Now operating from %CD%."
     call :log "Updating existing MapTool checkout..."
     call :run_command git fetch --tags --prune
-    if errorlevel 1 goto :fail
+    if errorlevel 1 (
+        call :log "git fetch --tags --prune failed. Confirm that the remote repository is reachable and that you have network access."
+        goto :fail
+    )
+    call :log "Remote repository metadata updated successfully."
 
     set "TARGET_BRANCH="
     for /f "tokens=3" %%B in ('git remote show origin ^| findstr /C:"HEAD branch:"') do (
@@ -86,12 +102,32 @@ if exist "%APP_DIR%\.git" (
     if defined TARGET_BRANCH (
         call :log "Checking out branch !TARGET_BRANCH!..."
         call :run_command git checkout !TARGET_BRANCH!
-        if errorlevel 1 goto :fail
+        if errorlevel 1 (
+            call :log "Failed to switch to target branch !TARGET_BRANCH!."
+            goto :fail
+        )
     ) else (
         call :log "Unable to determine default git branch; continuing without switching branches."
     )
 
     call :run_command git pull --ff-only
+    if errorlevel 1 (
+        call :log "git pull --ff-only failed. Resolve any local changes or network problems and re-run the bootstrap script."
+        goto :fail
+    )
+    call :log "Repository successfully fast-forwarded from origin."
+    set "CURRENT_BRANCH="
+    for /f "delims=" %%B in ('git rev-parse --abbrev-ref HEAD 2^>nul') do (
+        set "CURRENT_BRANCH=%%B"
+    )
+    if defined CURRENT_BRANCH call :log "Active branch: !CURRENT_BRANCH!."
+    set "CURRENT_COMMIT="
+    for /f "delims=" %%C in ('git rev-parse --short HEAD 2^>nul') do (
+        set "CURRENT_COMMIT=%%C"
+    )
+    if defined CURRENT_COMMIT call :log "HEAD commit: !CURRENT_COMMIT!."
+    call :log "Recording git status for diagnostics..."
+    call :run_command git status --short --branch
     if errorlevel 1 goto :fail
 ) else (
     call :log "Downloading the latest MapTool sources..."
@@ -105,17 +141,59 @@ if exist "%APP_DIR%\.git" (
     )
     call :log "Repository cloned; operating from %CD%."
     set "DID_PUSH=1"
+    call :log "Recording git status for diagnostics..."
+    call :run_command git status --short --branch
+    if errorlevel 1 goto :fail
+    set "CURRENT_BRANCH="
+    for /f "delims=" %%B in ('git rev-parse --abbrev-ref HEAD 2^>nul') do (
+        set "CURRENT_BRANCH=%%B"
+    )
+    if defined CURRENT_BRANCH call :log "Active branch: !CURRENT_BRANCH!."
+    set "CURRENT_COMMIT="
+    for /f "delims=" %%C in ('git rev-parse --short HEAD 2^>nul') do (
+        set "CURRENT_COMMIT=%%C"
+    )
+    if defined CURRENT_COMMIT call :log "HEAD commit: !CURRENT_COMMIT!."
 )
+
+call :log "Repository synchronization completed successfully."
+
+call :log_section "Project Layout Verification"
+if exist "%CD%\package.json" (
+    call :log "Found package.json at %CD%\package.json."
+) else (
+    call :log "package.json is missing from %CD%. The MapTool web client cannot be built without it."
+    goto :fail
+)
+if exist "%CD%\vite.config.ts" (
+    call :log "Found Vite configuration file."
+) else (
+    call :log "vite.config.ts not found; verify the repository contents."
+)
+if exist "%CD%\svelte.config.js" (
+    call :log "Found Svelte configuration file."
+) else (
+    call :log "svelte.config.js not found; verify the repository contents."
+)
+call :log "Project layout verification completed."
 
 call :log_section "Python Environment Setup"
 call :ensure_virtualenv
 if errorlevel 1 goto :fail
+call :log "Python environment setup completed successfully."
 
 call :log_section "Node Dependency Installation"
 call :log "Installing npm dependencies (this may take a moment)..."
 call :run_command npm install
-if errorlevel 1 goto :fail
-call :log "npm dependencies installed successfully."
+if errorlevel 1 (
+    call :log "npm install failed. Review the logged output above for the exact error."
+    goto :fail
+)
+if exist "%CD%\node_modules" (
+    call :log "npm dependencies installed successfully and node_modules directory detected."
+) else (
+    call :log "npm reported success but node_modules was not found; investigate npm configuration."
+)
 
 call :log_section "WebAssembly Build"
 if "%HAS_CARGO%"=="1" (
@@ -132,17 +210,31 @@ if "%HAS_CARGO%"=="1" (
 )
 
 call :log_section "Development Server Startup"
+call :log "Preparing to launch the Vite development server."
+call :log "Primary port: %PRIMARY_PORT%; fallback port: %FALLBACK_PORT%."
+if "%POWERSHELL_AVAILABLE%"=="1" (
+    call :log "Development server output will stream live to this console and to %LOG_FILE%."
+) else (
+    call :log "Development server output will be written to %LOG_FILE%. Use a text editor or the tail displayed on failure to review it."
+)
 call :log "Starting MapTool on port %PRIMARY_PORT% (fallback %FALLBACK_PORT%)..."
 call :run_command npm run dev -- --host --port %PRIMARY_PORT% --strictPort
 if errorlevel 1 (
     call :log "Port %PRIMARY_PORT% unavailable or dev server failed to start, retrying on %FALLBACK_PORT%..."
+    set "ACTIVE_PORT=%FALLBACK_PORT%"
+    call :log "Starting MapTool on fallback port %FALLBACK_PORT%..."
     call :run_command npm run dev -- --host --port %FALLBACK_PORT% --strictPort
     if errorlevel 1 goto :fail
+    call :log "Development server process finished while targeting fallback port %FALLBACK_PORT%."
+    goto :cleanup
 )
+set "ACTIVE_PORT=%PRIMARY_PORT%"
+call :log "Development server process finished while targeting primary port %PRIMARY_PORT%."
 goto :cleanup
 
 :fail
 set "FAILURE_CODE=%ERRORLEVEL%"
+set "BOOTSTRAP_FAILED=1"
 call :log ""
 call :log "An error occurred (exit code %FAILURE_CODE%). Review %LOG_FILE% for details."
 call :log "Showing recent log output (up to last 40 lines):"
@@ -150,11 +242,29 @@ call :print_log_tail
 goto :cleanup
 
 :cleanup
+set "FINAL_EXIT_CODE=%ERRORLEVEL%"
 if "%DID_PUSH%"=="1" popd
 call :log ""
+if "%BOOTSTRAP_FAILED%"=="0" if "%FINAL_EXIT_CODE%"=="0" (
+    call :log "MapTool bootstrap sequence completed successfully."
+    call :log "If the development server is still running, open http://localhost:%ACTIVE_PORT%/ to access the app."
+) else (
+    call :log "MapTool bootstrap sequence ended with errors."
+)
 call :log "Detailed log saved to %LOG_FILE%."
 endlocal
-exit /b %ERRORLEVEL%
+exit /b %FINAL_EXIT_CODE%
+
+:detect_powershell
+set "POWERSHELL_AVAILABLE=0"
+set "POWERSHELL_PATH="
+for /f "delims=" %%I in ('where powershell 2^>nul') do (
+    set "POWERSHELL_PATH=%%~I"
+    set "POWERSHELL_AVAILABLE=1"
+    goto :detect_powershell_done
+)
+:detect_powershell_done
+exit /b 0
 
 :run_command
 setlocal enabledelayedexpansion
@@ -170,12 +280,29 @@ if defined COMMAND_START_STAMP set "COMMAND_TIMING_AVAILABLE=1"
 if not defined COMMAND_START_STAMP set "COMMAND_START_STAMP=%DATE% %TIME%"
 call :log "Running command: !COMMAND! (started !COMMAND_START_STAMP!, cwd !COMMAND_CWD!)"
 >> "%LOG_FILE%" echo [%DATE% %TIME%] [command] !COMMAND!
-if "!COMMAND:~0,1!"=="\"" (
-    cmd.exe /d /c ""!COMMAND!"" >> "%LOG_FILE%" 2>&1
+set "LOCAL_TEMP_DIR=%COMMAND_TEMP_DIR%"
+if not defined LOCAL_TEMP_DIR set "LOCAL_TEMP_DIR=%TEMP%"
+if not defined LOCAL_TEMP_DIR set "LOCAL_TEMP_DIR=%SCRIPT_DIR%temp"
+if not exist "!LOCAL_TEMP_DIR!" (
+    call :log "Creating temporary command directory at !LOCAL_TEMP_DIR!."
+    mkdir "!LOCAL_TEMP_DIR!" >nul 2>nul
+)
+set "COMMAND_SCRIPT=!LOCAL_TEMP_DIR!\maptool_cmd_!RANDOM!!RANDOM!.cmd"
+(
+    echo @echo off
+    echo setlocal EnableExtensions EnableDelayedExpansion
+    echo cd /d "!COMMAND_CWD!"
+    echo(!COMMAND!
+    echo set "CMD_EXITCODE=%%errorlevel%%"
+    echo endlocal ^& exit /b %%CMD_EXITCODE%%
+) > "!COMMAND_SCRIPT!"
+if "%POWERSHELL_AVAILABLE%"=="1" (
+    "%POWERSHELL_PATH%" -NoProfile -ExecutionPolicy Bypass -Command "& { $ErrorActionPreference='Continue'; & '%COMMAND_SCRIPT%' 2>&1 | Tee-Object -FilePath '%LOG_FILE%' -Append; exit $LASTEXITCODE }"
 ) else (
-    cmd.exe /d /c !COMMAND! >> "%LOG_FILE%" 2>&1
+    call "!COMMAND_SCRIPT!" >> "%LOG_FILE%" 2>&1
 )
 set "EXITCODE=!ERRORLEVEL!"
+if exist "!COMMAND_SCRIPT!" del "!COMMAND_SCRIPT!" >nul 2>nul
 set "COMMAND_END_STAMP="
 for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "(Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')" 2^>nul`) do set "COMMAND_END_STAMP=%%~I"
 if not defined COMMAND_END_STAMP (
@@ -200,6 +327,7 @@ if "!EXITCODE!"=="0" (
     )
 )
 endlocal & exit /b %EXITCODE%
+
 
 :print_log_tail
 setlocal
@@ -403,6 +531,13 @@ if exist "!VENV_DIR!\Scripts\python.exe" (
     call :log "Python virtual environment ready at !VENV_DIR!."
 ) else (
     call :log "Python executable not found in !VENV_DIR! after virtual environment setup."
+    exit /b 1
+)
+
+call :log "Querying pip version inside the virtual environment..."
+call :run_command "!VENV_DIR!\Scripts\python.exe" -m pip --version
+if errorlevel 1 (
+    call :log "Failed to query pip from the virtual environment."
     exit /b 1
 )
 
