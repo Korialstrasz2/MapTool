@@ -5,9 +5,9 @@
     <link rel="icon" href="/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#0b172a" />
-    %svelte.head%
+    %sveltekit.head%
   </head>
-  <body>
-    <div id="svelte">%svelte.body%</div>
+  <body data-sveltekit-preload-data>
+    <div style="display: contents">%sveltekit.body%</div>
   </body>
 </html>
