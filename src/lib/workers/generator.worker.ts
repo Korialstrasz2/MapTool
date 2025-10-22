@@ -4,12 +4,20 @@ import type {
   GeneratorParameters,
   WorkerRequest,
   WorkerResponse,
-  WorkerError
+  WorkerError,
+  WorkerStatus,
+  WorkerStatusStage
 } from '$lib/types/generation';
 import type { TerrainWasmModule } from '$lib/wasm/terrain';
 import { loadTerrainWasm } from '$lib/wasm/terrain';
 
 let modulePromise: Promise<TerrainWasmModule> | null = null;
+let moduleLoaded = false;
+
+function postStatus(stage: WorkerStatusStage, message: string) {
+  const status: WorkerStatus = { type: 'status', stage, message };
+  ctx.postMessage(status);
+}
 
 const ctx: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobalScope;
 
@@ -23,10 +31,18 @@ ctx.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   try {
     if (!modulePromise) {
       console.info('[MapTool][Worker] Loading terrain WebAssembly module…');
+      postStatus('loading-module', 'Loading terrain engine…');
       modulePromise = loadTerrainWasm();
     }
 
     const module = await modulePromise;
+
+    if (!moduleLoaded) {
+      moduleLoaded = true;
+      postStatus('module-ready', 'Terrain engine ready.');
+    }
+
+    postStatus('generating', 'Running terrain simulation…');
     console.info('[MapTool][Worker] Starting generation', {
       seed: data.params.seed,
       width: data.params.width,
@@ -35,6 +51,7 @@ ctx.onmessage = async (event: MessageEvent<WorkerRequest>) => {
     const start = performance.now();
     const payload = runGenerator(module, data.params);
     const durationMs = performance.now() - start;
+    postStatus('transferring', 'Finalizing map data…');
     console.info('[MapTool][Worker] Generation completed', {
       durationMs: Number(durationMs.toFixed(2))
     });
