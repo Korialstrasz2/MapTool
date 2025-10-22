@@ -19,12 +19,18 @@ let loadPromise: Promise<TerrainWasmModule> | null = null;
 
 export async function loadTerrainWasm(): Promise<TerrainWasmModule> {
   if (!loadPromise) {
-    loadPromise = import('../../wasm/terrain/pkg/terrain').then(async (module) => {
-      if ('default' in module && typeof module.default === 'function') {
-        await module.default();
-      }
-      return module as unknown as TerrainWasmModule;
-    });
+    loadPromise = import('../../wasm/terrain/pkg/terrain')
+      .then(async (module) => {
+        if ('default' in module && typeof module.default === 'function') {
+          await module.default();
+        }
+        return module as unknown as TerrainWasmModule;
+      })
+      .catch(async (error) => {
+        console.warn('[MapTool] Falling back to JavaScript terrain generator', error);
+        const fallback = await import('./terrain-fallback');
+        return fallback.default;
+      });
   }
 
   return loadPromise;

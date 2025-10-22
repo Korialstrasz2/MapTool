@@ -34,9 +34,21 @@ if errorlevel 1 (
 )
 call :log "Python located at %PYTHON_CMD%."
 for /f "delims=" %%I in ('"%PYTHON_CMD%" --version 2^>nul') do call :log "%%~I"
-call :ensure_dependency cargo "Rust (cargo) is required to build the WebAssembly package. Install it from https://rustup.rs/."
-if errorlevel 1 goto :fail
-for /f "delims=" %%I in ('cargo --version 2^>nul') do call :log "%%~I"
+set "HAS_CARGO=0"
+set "CARGO_PATH="
+for /f "delims=" %%I in ('where cargo 2^>nul') do (
+    set "HAS_CARGO=1"
+    set "CARGO_PATH=%%~I"
+    goto :cargo_check_done
+)
+:cargo_check_done
+if "%HAS_CARGO%"=="1" (
+    call :log "Rust (cargo) located at %CARGO_PATH%."
+    for /f "delims=" %%I in ('cargo --version 2^>nul') do call :log "%%~I"
+) else (
+    call :log "Rust (cargo) was not found in PATH. WebAssembly build will be skipped and the JavaScript fallback will be used."
+    call :log "Install Rust from https://rustup.rs/ to enable the high-performance terrain generator."
+)
 call :log "Dependency check completed."
 
 if exist "%APP_DIR%\.git" (
@@ -68,14 +80,18 @@ call :run_command npm install
 if errorlevel 1 goto :fail
 call :log "npm dependencies installed successfully."
 
-call :ensure_wasm_pack
-if errorlevel 1 goto :fail
-for /f "delims=" %%I in ('"%WASM_PACK%" --version 2^>nul') do call :log "wasm-pack version: %%I"
+if "%HAS_CARGO%"=="1" (
+    call :ensure_wasm_pack
+    if errorlevel 1 goto :fail
+    for /f "delims=" %%I in ('"%WASM_PACK%" --version 2^>nul') do call :log "wasm-pack version: %%I"
 
-call :log "Building WebAssembly package..."
-call :run_command npm run wasm
-if errorlevel 1 goto :fail
-call :log "WebAssembly package built successfully."
+    call :log "Building WebAssembly package..."
+    call :run_command npm run wasm
+    if errorlevel 1 goto :fail
+    call :log "WebAssembly package built successfully."
+) else (
+    call :log "Skipping WebAssembly build because Rust toolchain is unavailable."
+)
 
 call :log "Starting MapTool on port %PRIMARY_PORT% (fallback %FALLBACK_PORT%)..."
 call :run_command npm run dev -- --host --port %PRIMARY_PORT% --strictPort
