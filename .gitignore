@@ -1,0 +1,8 @@
+node_modules
+build
+dist
+.vite
+.svelte-kit
+wasm/terrain/pkg/
+*.log
+.DS_Store
