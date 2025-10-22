@@ -21,6 +21,7 @@ if not exist "%APP_DIR%" (
     mkdir "%APP_DIR%" >nul 2>nul
 )
 
+call :log_section "Dependency Check"
 call :log "Checking required dependencies..."
 call :ensure_dependency git "Git is required but was not found in PATH."
 if errorlevel 1 goto :fail
@@ -28,6 +29,9 @@ for /f "delims=" %%I in ('git --version 2^>nul') do call :log "%%~I"
 call :ensure_dependency npm "Node.js (npm) is required but was not found in PATH."
 if errorlevel 1 goto :fail
 for /f "delims=" %%I in ('npm --version 2^>nul') do call :log "%%~I"
+call :ensure_dependency node "Node.js runtime (node) is required but was not found in PATH."
+if errorlevel 1 goto :fail
+for /f "delims=" %%I in ('node --version 2^>nul') do call :log "Node.js runtime %%~I"
 call :locate_python
 if errorlevel 1 (
     call :log "Python is required to create a virtual environment but was not found in PATH."
@@ -52,9 +56,16 @@ if "%HAS_CARGO%"=="1" (
 )
 call :log "Dependency check completed."
 
+call :log_section "Repository Synchronization"
 if exist "%APP_DIR%\.git" (
-    pushd "%APP_DIR%"
+    call :log "Switching to existing repository at %APP_DIR%..."
+    pushd "%APP_DIR%" >nul 2>nul
+    if errorlevel 1 (
+        call :log "Failed to change directory to %APP_DIR%."
+        goto :fail
+    )
     set "DID_PUSH=1"
+    call :log "Now operating from %CD%."
     call :log "Updating existing MapTool checkout..."
     call :run_command git fetch --tags --prune
     if errorlevel 1 goto :fail
@@ -87,18 +98,26 @@ if exist "%APP_DIR%\.git" (
     call :clone_repository
     if errorlevel 1 goto :fail
     if defined REPO_URL_USED call :log "Repository cloned from !REPO_URL_USED!."
-    pushd "%APP_DIR%"
+    pushd "%APP_DIR%" >nul 2>nul
+    if errorlevel 1 (
+        call :log "Failed to change directory to %APP_DIR% after cloning."
+        goto :fail
+    )
+    call :log "Repository cloned; operating from %CD%."
     set "DID_PUSH=1"
 )
 
+call :log_section "Python Environment Setup"
 call :ensure_virtualenv
 if errorlevel 1 goto :fail
 
+call :log_section "Node Dependency Installation"
 call :log "Installing npm dependencies (this may take a moment)..."
 call :run_command npm install
 if errorlevel 1 goto :fail
 call :log "npm dependencies installed successfully."
 
+call :log_section "WebAssembly Build"
 if "%HAS_CARGO%"=="1" (
     call :ensure_wasm_pack
     if errorlevel 1 goto :fail
@@ -112,6 +131,7 @@ if "%HAS_CARGO%"=="1" (
     call :log "Skipping WebAssembly build because Rust toolchain is unavailable."
 )
 
+call :log_section "Development Server Startup"
 call :log "Starting MapTool on port %PRIMARY_PORT% (fallback %FALLBACK_PORT%)..."
 call :run_command npm run dev -- --host --port %PRIMARY_PORT% --strictPort
 if errorlevel 1 (
@@ -142,7 +162,13 @@ set "COMMAND=%*"
 if not defined COMMAND (
     endlocal & exit /b 0
 )
-call :log "Running command: !COMMAND!"
+set "COMMAND_CWD=%CD%"
+set "COMMAND_START_STAMP="
+set "COMMAND_TIMING_AVAILABLE=0"
+for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "(Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')" 2^>nul`) do set "COMMAND_START_STAMP=%%~I"
+if defined COMMAND_START_STAMP set "COMMAND_TIMING_AVAILABLE=1"
+if not defined COMMAND_START_STAMP set "COMMAND_START_STAMP=%DATE% %TIME%"
+call :log "Running command: !COMMAND! (started !COMMAND_START_STAMP!, cwd !COMMAND_CWD!)"
 >> "%LOG_FILE%" echo [%DATE% %TIME%] [command] !COMMAND!
 if "!COMMAND:~0,1!"=="\"" (
     cmd.exe /d /c ""!COMMAND!"" >> "%LOG_FILE%" 2>&1
@@ -150,8 +176,28 @@ if "!COMMAND:~0,1!"=="\"" (
     cmd.exe /d /c !COMMAND! >> "%LOG_FILE%" 2>&1
 )
 set "EXITCODE=!ERRORLEVEL!"
-if not "!EXITCODE!"=="0" (
-    call :log "Command failed with exit code !EXITCODE!: !COMMAND!"
+set "COMMAND_END_STAMP="
+for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "(Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')" 2^>nul`) do set "COMMAND_END_STAMP=%%~I"
+if not defined COMMAND_END_STAMP (
+    set "COMMAND_END_STAMP=%DATE% %TIME%"
+    set "COMMAND_TIMING_AVAILABLE=0"
+)
+set "COMMAND_DURATION="
+if "!COMMAND_TIMING_AVAILABLE!"=="1" (
+    for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "(New-TimeSpan -Start ([datetime]'!COMMAND_START_STAMP!') -End ([datetime]'!COMMAND_END_STAMP!')).TotalSeconds.ToString('0.###')" 2^>nul`) do set "COMMAND_DURATION=%%~I"
+)
+if "!EXITCODE!"=="0" (
+    if defined COMMAND_DURATION (
+        call :log "Command completed successfully in !COMMAND_DURATION! seconds (finished !COMMAND_END_STAMP!): !COMMAND!"
+    ) else (
+        call :log "Command completed successfully (finished !COMMAND_END_STAMP!): !COMMAND!"
+    )
+) else (
+    if defined COMMAND_DURATION (
+        call :log "Command failed with exit code !EXITCODE! after !COMMAND_DURATION! seconds (finished !COMMAND_END_STAMP!): !COMMAND!"
+    ) else (
+        call :log "Command failed with exit code !EXITCODE! (finished !COMMAND_END_STAMP!): !COMMAND!"
+    )
 )
 endlocal & exit /b %EXITCODE%
 
@@ -282,6 +328,8 @@ set "APP_CANON="
 for %%A in ("%APP_DIR%") do set "APP_CANON=%%~fA"
 if defined APP_CANON if "!APP_CANON:~-1!"=="\" set "APP_CANON=!APP_CANON:~0,-1!"
 
+call :log "Requesting virtual environment at !TARGET_CANON! (source argument: %~1)."
+
 call :run_command "%PYTHON_CMD%" -m venv "!TARGET_CANON!"
 set "EXITCODE=!ERRORLEVEL!"
 if "!EXITCODE!"=="0" goto :create_virtualenv_success
@@ -310,19 +358,23 @@ if exist "!TARGET_CANON!" rd /s /q "!TARGET_CANON!" >nul 2>nul
 endlocal & exit /b !EXITCODE!
 
 :create_virtualenv_success
+call :log "Virtual environment creation succeeded at !TARGET_CANON!."
 endlocal & exit /b 0
 
 :ensure_virtualenv
 set "VENV_DIR="
 set "VENV_STATUS=new"
+call :log "Scanning for existing virtual environments in %APP_DIR%..."
 for %%D in (.venv venv) do (
     if not defined VENV_DIR if exist "%APP_DIR%\%%D\Scripts\python.exe" (
+        call :log "Found existing Python virtual environment candidate at %APP_DIR%\%%D."
         set "VENV_DIR=%APP_DIR%\%%D"
         set "VENV_STATUS=existing"
     )
 )
 if not defined VENV_DIR (
     set "VENV_DIR=%APP_DIR%\.venv"
+    call :log "No existing virtual environment detected; defaulting to %APP_DIR%\.venv."
 )
 
 if "%VENV_STATUS%"=="existing" (
@@ -346,6 +398,7 @@ if "%VENV_STATUS%"=="existing" (
     )
 )
 
+call :log "Verifying Python executable at !VENV_DIR!\Scripts\python.exe..."
 if exist "!VENV_DIR!\Scripts\python.exe" (
     call :log "Python virtual environment ready at !VENV_DIR!."
 ) else (
@@ -360,14 +413,27 @@ if exist "%APP_DIR%\requirements.txt" (
         call :log "Failed to upgrade pip inside the virtual environment."
         exit /b 1
     )
+    call :log "pip upgraded successfully."
     call :run_command "!VENV_DIR!\Scripts\pip.exe" install -r "%APP_DIR%\requirements.txt"
     if errorlevel 1 (
         call :log "Failed to install Python dependencies."
         exit /b 1
     )
+    call :log "Python dependencies installed successfully."
 ) else (
     call :log "No requirements.txt found; skipping Python dependency installation."
 )
+exit /b 0
+
+:log_section
+setlocal enabledelayedexpansion
+set "SECTION_TITLE=%~1"
+if not defined SECTION_TITLE set "SECTION_TITLE=General"
+call :log ""
+call :log "=============================="
+call :log ">>> !SECTION_TITLE!"
+call :log "=============================="
+endlocal
 exit /b 0
 
 :log
