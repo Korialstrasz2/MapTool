@@ -16,6 +16,7 @@ export const generatorParameters = writable<GeneratorParameters>(DEFAULT_PARAMS)
 export const generatorResult = writable<GeneratorResult | null>(null);
 export const isGenerating = writable(false);
 export const lastDuration = writable<number | null>(null);
+export const generationStatus = writable<string>('');
 
 export const summary = derived(generatorResult, ($result) => {
   if (!$result) {

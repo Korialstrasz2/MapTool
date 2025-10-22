@@ -57,3 +57,17 @@ export interface WorkerError {
   type: 'error';
   message: string;
 }
+
+export type WorkerStatusStage =
+  | 'loading-module'
+  | 'module-ready'
+  | 'generating'
+  | 'transferring';
+
+export interface WorkerStatus {
+  type: 'status';
+  stage: WorkerStatusStage;
+  message: string;
+}
+
+export type WorkerMessage = WorkerResponse | WorkerError | WorkerStatus;

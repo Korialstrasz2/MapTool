@@ -7,9 +7,10 @@
     isGenerating,
     lastDuration,
     summary,
-    randomizeSeed
+    randomizeSeed,
+    generationStatus
   } from '$stores/generatorStore';
-  import type { WorkerResponse, WorkerError } from '$lib/types/generation';
+  import type { WorkerMessage } from '$lib/types/generation';
   import type { GeneratorParameters } from '$lib/types/generation';
   import { MapRenderer } from '$lib/render/MapRenderer';
 
@@ -36,11 +37,17 @@
 
     console.info('[MapTool] Background worker started.');
 
-    worker.onmessage = (event: MessageEvent<WorkerResponse | WorkerError>) => {
+    worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
       const message = event.data;
+      if (message.type === 'status') {
+        generationStatus.set(message.message);
+        console.info('[MapTool] Status update from worker', message);
+        return;
+      }
       if (message.type === 'error') {
         isGenerating.set(false);
         errorMessage = message.message;
+        generationStatus.set('Generation failed.');
         console.error('[MapTool] Generation error reported by worker', message.message);
         return;
       }
@@ -54,6 +61,7 @@
       generatorResult.set(message.payload);
       lastDuration.set(message.durationMs);
       isGenerating.set(false);
+      generationStatus.set(`Map ready in ${message.durationMs.toFixed(0)} ms.`);
       errorMessage = null;
       console.info('[MapTool] Generation finished', {
         durationMs: Number(message.durationMs.toFixed(2)),
@@ -76,12 +84,14 @@
       try {
         renderer = await MapRenderer.create(canvasContainer);
         rendererReady = true;
+        generationStatus.set('Renderer ready.');
         console.info('[MapTool] Renderer initialized.', {
           width: canvasContainer.clientWidth,
           height: canvasContainer.clientHeight
         });
       } catch (error) {
         errorMessage = 'Failed to initialize graphics renderer.';
+        generationStatus.set('Failed to initialize graphics renderer.');
         console.error('[MapTool] Renderer initialization failed', error);
         return;
       }
@@ -116,11 +126,13 @@
     renderer?.destroy();
     renderer = null;
     rendererReady = false;
+    generationStatus.set('');
   });
 
   function triggerGeneration() {
     if (!worker) {
       console.warn('[MapTool] Cannot trigger generation; worker not ready.');
+      generationStatus.set('Generator is still starting…');
       return;
     }
     if (!rendererReady) {
@@ -128,6 +140,7 @@
     }
     const params = get(generatorParameters);
     isGenerating.set(true);
+    generationStatus.set('Preparing generation…');
     console.info('[MapTool] Triggering generation', {
       seed: params.seed,
       width: params.width,
@@ -157,8 +170,13 @@
     {#if errorMessage}
       <div class="error-banner">{errorMessage}</div>
     {/if}
-    {#if $isGenerating}
-      <div class="loading">Generating…</div>
+    {#if $generationStatus}
+      <div class:active={$isGenerating} class="status-banner">
+        {#if $isGenerating}
+          <span class="spinner" aria-hidden="true"></span>
+        {/if}
+        <span>{$generationStatus}</span>
+      </div>
     {/if}
   </div>
   <aside class="control-panel">
@@ -301,14 +319,41 @@
     image-rendering: pixelated;
   }
 
-  .loading {
+  .status-banner {
     position: absolute;
     top: 1rem;
     left: 1rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
     padding: 0.5rem 1rem;
     background: rgba(11, 23, 42, 0.8);
     border-radius: 0.5rem;
     backdrop-filter: blur(6px);
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    box-shadow: 0 12px 24px rgba(8, 15, 35, 0.25);
+  }
+
+  .status-banner.active {
+    border-color: rgba(56, 189, 248, 0.6);
+  }
+
+  .spinner {
+    width: 1rem;
+    height: 1rem;
+    border-radius: 9999px;
+    border: 2px solid rgba(148, 163, 184, 0.35);
+    border-top-color: #38bdf8;
+    animation: spin 0.8s linear infinite;
+  }
+
+  @keyframes spin {
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .error-banner {
