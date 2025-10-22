@@ -2,12 +2,13 @@
 setlocal enabledelayedexpansion
 
 set "SCRIPT_DIR=%~dp0"
-set "REPO_URL=https://github.com/JeremyTCD/MapTool.git"
+set "REPO_URLS=https://github.com/RPTools/maptool-app.git https://github.com/RPTools/maptool.git https://github.com/JeremyTCD/MapTool.git"
 set "APP_DIR=%SCRIPT_DIR%maptool-app"
 set "PRIMARY_PORT=5173"
 set "FALLBACK_PORT=8010"
 set "DID_PUSH=0"
 set "LOG_FILE=%SCRIPT_DIR%start-maptool.log"
+set "REPO_URL_USED="
 
 if exist "%LOG_FILE%" del "%LOG_FILE%" >nul 2>nul
 
@@ -63,11 +64,9 @@ if exist "%APP_DIR%\.git" (
     if errorlevel 1 goto :fail
 ) else (
     call :log "Downloading the latest MapTool sources..."
-    call :run_command git clone "%REPO_URL%" "%APP_DIR%"
-    if errorlevel 1 (
-        call :log "Failed to clone repository from %REPO_URL%."
-        goto :fail
-    )
+    call :clone_repository
+    if errorlevel 1 goto :fail
+    if defined REPO_URL_USED call :log "Repository cloned from %REPO_URL_USED%."
     pushd "%APP_DIR%"
     set "DID_PUSH=1"
 )
@@ -154,6 +153,27 @@ if exist "%LOG_FILE%" (
 :print_tail_end
 endlocal
 exit /b 0
+
+:clone_repository
+set "REPO_URL_USED="
+for %%U in (%REPO_URLS%) do (
+    call :log "Attempting to clone repository from %%~U..."
+    call :run_command git clone "%%~U" "%APP_DIR%"
+    if not errorlevel 1 (
+        set "REPO_URL_USED=%%~U"
+        goto :clone_repository_success
+    )
+    call :log "Clone attempt from %%~U failed."
+)
+goto :clone_repository_failure
+
+:clone_repository_success
+if defined REPO_URL_USED call :log "Successfully cloned MapTool sources."
+exit /b 0
+
+:clone_repository_failure
+call :log "Failed to clone MapTool from any known repository URL."
+exit /b 1
 
 :ensure_dependency
 set "TOOL=%~1"
