@@ -23,32 +23,35 @@ if not exist "%APP_DIR%" (
 call :log "Checking required dependencies..."
 call :ensure_dependency git "Git is required but was not found in PATH."
 if errorlevel 1 goto :fail
-for /f "delims=" %%I in ('git --version 2^>nul') do call :log "git version: %%I"
+for /f "delims=" %%I in ('git --version 2^>nul') do call :log "%%~I"
 call :ensure_dependency npm "Node.js (npm) is required but was not found in PATH."
 if errorlevel 1 goto :fail
-for /f "delims=" %%I in ('npm --version 2^>nul') do call :log "npm version: %%I"
+for /f "delims=" %%I in ('npm --version 2^>nul') do call :log "%%~I"
 call :locate_python
 if errorlevel 1 (
     call :log "Python is required to create a virtual environment but was not found in PATH."
     goto :fail
 )
 call :log "Python located at %PYTHON_CMD%."
-for /f "delims=" %%I in ('"%PYTHON_CMD%" --version 2^>&1') do call :log "Python version: %%I"
+for /f "delims=" %%I in ('"%PYTHON_CMD%" --version 2^>nul') do call :log "%%~I"
+call :ensure_dependency cargo "Rust (cargo) is required to build the WebAssembly package. Install it from https://rustup.rs/."
+if errorlevel 1 goto :fail
+for /f "delims=" %%I in ('cargo --version 2^>nul') do call :log "%%~I"
 call :log "Dependency check completed."
 
 if exist "%APP_DIR%\.git" (
     pushd "%APP_DIR%"
     set "DID_PUSH=1"
     call :log "Updating existing MapTool checkout..."
-    git fetch --tags --prune >> "%LOG_FILE%" 2>&1
+    call :run_command git fetch --tags --prune
     if errorlevel 1 goto :fail
-    git checkout main >> "%LOG_FILE%" 2>&1
+    call :run_command git checkout main
     if errorlevel 1 goto :fail
-    git pull --ff-only >> "%LOG_FILE%" 2>&1
+    call :run_command git pull --ff-only
     if errorlevel 1 goto :fail
 ) else (
     call :log "Downloading the latest MapTool sources..."
-    git clone "%REPO_URL%" "%APP_DIR%" >> "%LOG_FILE%" 2>&1
+    call :run_command git clone "%REPO_URL%" "%APP_DIR%"
     if errorlevel 1 (
         call :log "Failed to clone repository from %REPO_URL%."
         goto :fail
@@ -61,7 +64,7 @@ call :ensure_virtualenv
 if errorlevel 1 goto :fail
 
 call :log "Installing npm dependencies (this may take a moment)..."
-call npm install >> "%LOG_FILE%" 2>&1
+call :run_command npm install
 if errorlevel 1 goto :fail
 call :log "npm dependencies installed successfully."
 
@@ -70,24 +73,25 @@ if errorlevel 1 goto :fail
 for /f "delims=" %%I in ('"%WASM_PACK%" --version 2^>nul') do call :log "wasm-pack version: %%I"
 
 call :log "Building WebAssembly package..."
-call npm run wasm >> "%LOG_FILE%" 2>&1
+call :run_command npm run wasm
 if errorlevel 1 goto :fail
 call :log "WebAssembly package built successfully."
 
 call :log "Starting MapTool on port %PRIMARY_PORT% (fallback %FALLBACK_PORT%)..."
-call npm run dev -- --host --port %PRIMARY_PORT% --strictPort >> "%LOG_FILE%" 2>&1
+call :run_command npm run dev -- --host --port %PRIMARY_PORT% --strictPort
 if errorlevel 1 (
-    call :log "Port %PRIMARY_PORT% unavailable, retrying on %FALLBACK_PORT%..."
-    call npm run dev -- --host --port %FALLBACK_PORT% --strictPort >> "%LOG_FILE%" 2>&1
+    call :log "Port %PRIMARY_PORT% unavailable or dev server failed to start, retrying on %FALLBACK_PORT%..."
+    call :run_command npm run dev -- --host --port %FALLBACK_PORT% --strictPort
     if errorlevel 1 goto :fail
 )
-call :log "Development server is running. Output is being written to %LOG_FILE%."
 goto :cleanup
 
 :fail
 set "FAILURE_CODE=%ERRORLEVEL%"
 call :log ""
 call :log "An error occurred (exit code %FAILURE_CODE%). Review %LOG_FILE% for details."
+call :log "Showing recent log output (up to last 40 lines):"
+call :print_log_tail
 goto :cleanup
 
 :cleanup
@@ -96,6 +100,44 @@ call :log ""
 call :log "Detailed log saved to %LOG_FILE%."
 endlocal
 exit /b %ERRORLEVEL%
+
+:run_command
+setlocal enabledelayedexpansion
+set "COMMAND=%*"
+if not defined COMMAND (
+    endlocal & exit /b 0
+)
+call :log "Running command: !COMMAND!"
+>> "%LOG_FILE%" echo [%DATE% %TIME%] [command] !COMMAND!
+cmd.exe /d /c !COMMAND! >> "%LOG_FILE%" 2>&1
+set "EXITCODE=!ERRORLEVEL!"
+if not "!EXITCODE!"=="0" (
+    call :log "Command failed with exit code !EXITCODE!: !COMMAND!"
+)
+endlocal & exit /b %EXITCODE%
+
+:print_log_tail
+setlocal
+set "POWERSHELL_CMD="
+for /f "delims=" %%I in ('where powershell 2^>nul') do (
+    set "POWERSHELL_CMD=%%~I"
+    goto :print_tail_ps
+)
+goto :print_tail_type
+
+:print_tail_ps
+if not defined POWERSHELL_CMD goto :print_tail_type
+"%POWERSHELL_CMD%" -NoProfile -Command "Get-Content -Path '%LOG_FILE%' -Tail 40"
+goto :print_tail_end
+
+:print_tail_type
+if exist "%LOG_FILE%" (
+    type "%LOG_FILE%"
+)
+
+:print_tail_end
+endlocal
+exit /b 0
 
 :ensure_dependency
 set "TOOL=%~1"
@@ -146,7 +188,7 @@ if exist "%VENV_DIR%\Scripts\python.exe" (
     call :log "Using existing Python virtual environment at %VENV_DIR%."
 ) else (
     call :log "Creating Python virtual environment at %VENV_DIR%..."
-    "%PYTHON_CMD%" -m venv "%VENV_DIR%" >> "%LOG_FILE%" 2>&1
+    call :run_command "%PYTHON_CMD%" -m venv "%VENV_DIR%"
     if errorlevel 1 (
         call :log "Failed to create Python virtual environment."
         exit /b 1
@@ -154,12 +196,12 @@ if exist "%VENV_DIR%\Scripts\python.exe" (
 )
 if exist "%APP_DIR%\requirements.txt" (
     call :log "Installing Python dependencies from requirements.txt..."
-    "%VENV_DIR%\Scripts\python.exe" -m pip install --upgrade pip >> "%LOG_FILE%" 2>&1
+    call :run_command "%VENV_DIR%\Scripts\python.exe" -m pip install --upgrade pip
     if errorlevel 1 (
         call :log "Failed to upgrade pip inside the virtual environment."
         exit /b 1
     )
-    "%VENV_DIR%\Scripts\pip.exe" install -r "%APP_DIR%\requirements.txt" >> "%LOG_FILE%" 2>&1
+    call :run_command "%VENV_DIR%\Scripts\pip.exe" install -r "%APP_DIR%\requirements.txt"
     if errorlevel 1 (
         call :log "Failed to install Python dependencies."
         exit /b 1
