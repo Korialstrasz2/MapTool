@@ -35,6 +35,7 @@
       if (message.type === 'error') {
         isGenerating.set(false);
         errorMessage = message.message;
+        console.error('[MapTool] Generation error reported by worker', message.message);
         return;
       }
 
@@ -42,6 +43,13 @@
       lastDuration.set(message.durationMs);
       isGenerating.set(false);
       errorMessage = null;
+      console.info('[MapTool] Generation finished', {
+        durationMs: Number(message.durationMs.toFixed(2)),
+        summary: {
+          width: message.payload.width,
+          height: message.payload.height
+        }
+      });
     };
 
     renderer = new MapRenderer(canvasContainer);
@@ -65,6 +73,11 @@
     if (!worker) return;
     const params = get(generatorParameters);
     isGenerating.set(true);
+    console.info('[MapTool] Triggering generation', {
+      seed: params.seed,
+      width: params.width,
+      height: params.height
+    });
     worker.postMessage({ type: 'generate', params });
   }
 
