@@ -58,8 +58,28 @@ if exist "%APP_DIR%\.git" (
     call :log "Updating existing MapTool checkout..."
     call :run_command git fetch --tags --prune
     if errorlevel 1 goto :fail
-    call :run_command git checkout main
-    if errorlevel 1 goto :fail
+
+    set "TARGET_BRANCH="
+    for /f "tokens=3" %%B in ('git remote show origin ^| findstr /C:"HEAD branch:"') do (
+        set "TARGET_BRANCH=%%B"
+    )
+
+    if not defined TARGET_BRANCH (
+        for /f "delims=" %%B in ('git rev-parse --abbrev-ref HEAD 2^>nul') do (
+            set "TARGET_BRANCH=%%B"
+        )
+    )
+
+    if /I "!TARGET_BRANCH!"=="(unknown)" set "TARGET_BRANCH="
+
+    if defined TARGET_BRANCH (
+        call :log "Checking out branch !TARGET_BRANCH!..."
+        call :run_command git checkout !TARGET_BRANCH!
+        if errorlevel 1 goto :fail
+    ) else (
+        call :log "Unable to determine default git branch; continuing without switching branches."
+    )
+
     call :run_command git pull --ff-only
     if errorlevel 1 goto :fail
 ) else (
