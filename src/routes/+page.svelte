@@ -18,17 +18,23 @@
   let renderer: MapRenderer | null = null;
   let unsubscribe: (() => void) | null = null;
   let errorMessage: string | null = null;
+  let rendererReady = false;
 
   const canUseBrowser = typeof window !== 'undefined';
 
   onMount(() => {
     if (!canUseBrowser || !canvasContainer) {
+      console.warn('[MapTool] Skipping UI initialization; browser APIs unavailable.');
       return;
     }
+
+    console.info('[MapTool] Starting UI initialization.');
 
     worker = new Worker(new URL('$workers/generator.worker.ts', import.meta.url), {
       type: 'module'
     });
+
+    console.info('[MapTool] Background worker started.');
 
     worker.onmessage = (event: MessageEvent<WorkerResponse | WorkerError>) => {
       const message = event.data;
@@ -38,6 +44,12 @@
         console.error('[MapTool] Generation error reported by worker', message.message);
         return;
       }
+
+      console.info('[MapTool] Generation result received from worker', {
+        width: message.payload.width,
+        height: message.payload.height,
+        durationMs: Number(message.durationMs.toFixed(2))
+      });
 
       generatorResult.set(message.payload);
       lastDuration.set(message.durationMs);
@@ -52,25 +64,68 @@
       });
     };
 
-    renderer = new MapRenderer(canvasContainer);
+    worker.onerror = (event) => {
+      console.error('[MapTool] Worker runtime error', event);
+    };
 
-    unsubscribe = generatorResult.subscribe((result) => {
-      if (result && renderer) {
-        renderer.render(result);
+    worker.onmessageerror = (event) => {
+      console.error('[MapTool] Worker message deserialization error', event);
+    };
+
+    const initializeRenderer = async () => {
+      try {
+        renderer = await MapRenderer.create(canvasContainer);
+        rendererReady = true;
+        console.info('[MapTool] Renderer initialized.', {
+          width: canvasContainer.clientWidth,
+          height: canvasContainer.clientHeight
+        });
+      } catch (error) {
+        errorMessage = 'Failed to initialize graphics renderer.';
+        console.error('[MapTool] Renderer initialization failed', error);
+        return;
       }
-    });
 
-    triggerGeneration();
+      unsubscribe = generatorResult.subscribe((result) => {
+        if (!result) {
+          console.debug('[MapTool] Awaiting generator output.');
+          return;
+        }
+
+        console.info('[MapTool] Rendering new generator result.', {
+          width: result.width,
+          height: result.height
+        });
+        renderer?.render(result);
+      });
+
+      console.info('[MapTool] Subscribed to generator result updates.');
+
+      triggerGeneration();
+    };
+
+    void initializeRenderer();
   });
 
   onDestroy(() => {
+    console.info('[MapTool] Cleaning up UI resources.');
     unsubscribe?.();
+    unsubscribe = null;
     worker?.terminate();
+    worker = null;
     renderer?.destroy();
+    renderer = null;
+    rendererReady = false;
   });
 
   function triggerGeneration() {
-    if (!worker) return;
+    if (!worker) {
+      console.warn('[MapTool] Cannot trigger generation; worker not ready.');
+      return;
+    }
+    if (!rendererReady) {
+      console.warn('[MapTool] Trigger requested before renderer finished initialization.');
+    }
     const params = get(generatorParameters);
     isGenerating.set(true);
     console.info('[MapTool] Triggering generation', {
@@ -86,6 +141,7 @@
       ...params,
       [key]: value
     }));
+    console.info('[MapTool] Updated generator parameter', { key, value });
   }
 </script>
 
