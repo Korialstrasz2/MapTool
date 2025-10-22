@@ -14,6 +14,7 @@ set "POWERSHELL_AVAILABLE=0"
 set "POWERSHELL_PATH="
 set "BOOTSTRAP_FAILED=0"
 set "COMMAND_TEMP_DIR="
+set "LAST_ERROR_CODE="
 
 if exist "%LOG_FILE%" del "%LOG_FILE%" >nul 2>nul
 
@@ -184,14 +185,29 @@ call :log "Python environment setup completed successfully."
 
 call :log_section "Node Dependency Installation"
 call :log_npm_configuration
+call :log_package_json_dependencies
+if exist "%CD%\node_modules" (
+    call :log "node_modules directory detected before installation."
+) else (
+    call :log "node_modules directory not present before installation."
+)
+if exist "%CD%\package-lock.json" (
+    call :log "Existing package-lock.json detected before installation."
+) else (
+    call :log "package-lock.json not found before installation."
+)
 call :log "Installing npm dependencies (this may take a moment)..."
 call :run_command npm install
-if errorlevel 1 (
+set "NPM_INSTALL_EXITCODE=%ERRORLEVEL%"
+if not "%NPM_INSTALL_EXITCODE%"=="0" (
+    set "LAST_ERROR_CODE=%NPM_INSTALL_EXITCODE%"
     call :log "npm install failed. Review the logged output above for the exact error."
     call :log "If peer dependency conflicts occur, compare package.json requirements with the versions reported above."
+    call :collect_npm_failure_diagnostics
     goto :fail
 )
 call :log "npm install completed successfully."
+call :collect_npm_success_diagnostics
 if exist "%CD%\node_modules" (
     call :log "npm dependencies installed successfully and node_modules directory detected."
 ) else (
@@ -241,12 +257,17 @@ call :log "Development server process finished while targeting primary port %PRI
 goto :cleanup
 
 :fail
-set "FAILURE_CODE=%ERRORLEVEL%"
+if defined LAST_ERROR_CODE (
+    set "FAILURE_CODE=%LAST_ERROR_CODE%"
+) else (
+    set "FAILURE_CODE=%ERRORLEVEL%"
+)
 set "BOOTSTRAP_FAILED=1"
 call :log ""
 call :log "An error occurred (exit code %FAILURE_CODE%). Review %LOG_FILE% for details."
 call :log "Showing recent log output (up to last 40 lines):"
 call :print_log_tail
+call :_set_errorlevel %FAILURE_CODE%
 goto :cleanup
 
 :cleanup
@@ -261,6 +282,7 @@ if "%BOOTSTRAP_FAILED%"=="0" if "%FINAL_EXIT_CODE%"=="0" (
 )
 call :log "Detailed log saved to %LOG_FILE%."
 call :log "Bootstrap script exiting with code %FINAL_EXIT_CODE%."
+set "LAST_ERROR_CODE="
 endlocal
 exit /b %FINAL_EXIT_CODE%
 
@@ -381,6 +403,12 @@ exit /b 0
 :clone_repository_failure
 call :log "Failed to clone MapTool from any known repository URL."
 exit /b 1
+
+:_set_errorlevel
+if "%~1"=="" (
+    exit /b 0
+)
+exit /b %~1
 
 :ensure_dependency
 set "TOOL=%~1"
@@ -625,6 +653,57 @@ set "NPM_CACHE_DIR="
 for /f "delims=" %%I in ('npm config get cache 2^>nul') do set "NPM_CACHE_DIR=%%I"
 if defined NPM_CACHE_DIR call :log "npm cache directory: !NPM_CACHE_DIR!"
 
+endlocal & exit /b 0
+
+:collect_npm_failure_diagnostics
+setlocal enabledelayedexpansion
+call :log "Attempting to collect npm dependency resolution diagnostics..."
+if not exist "%CD%\package.json" (
+    call :log "package.json not found in %CD%; skipping npm diagnostics."
+    endlocal & exit /b 0
+)
+call :run_command npm ls vite @sveltejs/vite-plugin-svelte @sveltejs/kit --depth=0
+set "CMD_EXIT=!ERRORLEVEL!"
+if not "!CMD_EXIT!"=="0" (
+    call :log "npm ls command exited with code !CMD_EXIT!. Output above may still contain useful information."
+)
+call :run_command npm explain @sveltejs/vite-plugin-svelte
+set "CMD_EXIT=!ERRORLEVEL!"
+if not "!CMD_EXIT!"=="0" (
+    call :log "npm explain for @sveltejs/vite-plugin-svelte exited with code !CMD_EXIT!. This can occur if dependencies are not installed yet."
+)
+call :run_command npm explain vite
+set "CMD_EXIT=!ERRORLEVEL!"
+if not "!CMD_EXIT!"=="0" (
+    call :log "npm explain for vite exited with code !CMD_EXIT!. This can occur if dependencies are not installed yet."
+)
+endlocal & exit /b 0
+
+:collect_npm_success_diagnostics
+setlocal enabledelayedexpansion
+call :log "Collecting npm dependency versions for verification..."
+call :run_command npm list vite @sveltejs/vite-plugin-svelte @sveltejs/kit svelte --depth=0
+set "CMD_EXIT=!ERRORLEVEL!"
+if not "!CMD_EXIT!"=="0" (
+    call :log "npm list exited with code !CMD_EXIT!. Output above may include warnings but should list installed versions."
+)
+endlocal & exit /b 0
+
+:log_package_json_dependencies
+setlocal enabledelayedexpansion
+set "PACKAGE_JSON=%CD%\package.json"
+if not exist "!PACKAGE_JSON!" (
+    call :log "package.json not found in %CD%; skipping dependency summary."
+    endlocal & exit /b 0
+)
+for /f "usebackq delims=" %%L in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $pkg = Get-Content -Raw -LiteralPath '%PACKAGE_JSON%' | ConvertFrom-Json; if ($pkg.dependencies) { 'Dependencies:'; $pkg.dependencies.GetEnumerator() | Sort-Object Name | ForEach-Object { '  ' + $_.Name + ': ' + $_.Value } } else { 'Dependencies: (none)' }; if ($pkg.devDependencies) { 'DevDependencies:'; $pkg.devDependencies.GetEnumerator() | Sort-Object Name | ForEach-Object { '  ' + $_.Name + ': ' + $_.Value } } else { 'DevDependencies: (none)' } } catch { 'Failed to parse package.json: ' + $_.Exception.Message }"`) do (
+    set "LINE=%%L"
+    if "!LINE!"=="" (
+        call :log "    (blank)"
+    ) else (
+        call :log "!LINE!"
+    )
+)
 endlocal & exit /b 0
 
 :log_npmrc_file
