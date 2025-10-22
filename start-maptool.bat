@@ -13,6 +13,7 @@ if exist "%LOG_FILE%" del "%LOG_FILE%" >nul 2>nul
 
 call :log "Starting MapTool bootstrap script."
 call :log "Log file: %LOG_FILE%"
+call :log "System PATH: %PATH%"
 
 if not exist "%APP_DIR%" (
     call :log "Creating application directory at %APP_DIR%..."
@@ -22,16 +23,17 @@ if not exist "%APP_DIR%" (
 call :log "Checking required dependencies..."
 call :ensure_dependency git "Git is required but was not found in PATH."
 if errorlevel 1 goto :fail
+for /f "delims=" %%I in ('git --version 2^>nul') do call :log "git version: %%I"
 call :ensure_dependency npm "Node.js (npm) is required but was not found in PATH."
 if errorlevel 1 goto :fail
-call :ensure_dependency wasm-pack "wasm-pack is required but was not found in PATH. Install it from https://rustwasm.github.io/wasm-pack/installer/."
-if errorlevel 1 goto :fail
+for /f "delims=" %%I in ('npm --version 2^>nul') do call :log "npm version: %%I"
 call :locate_python
 if errorlevel 1 (
     call :log "Python is required to create a virtual environment but was not found in PATH."
     goto :fail
 )
 call :log "Python located at %PYTHON_CMD%."
+for /f "delims=" %%I in ('"%PYTHON_CMD%" --version 2^>&1') do call :log "Python version: %%I"
 call :log "Dependency check completed."
 
 if exist "%APP_DIR%\.git" (
@@ -61,10 +63,16 @@ if errorlevel 1 goto :fail
 call :log "Installing npm dependencies (this may take a moment)..."
 call npm install >> "%LOG_FILE%" 2>&1
 if errorlevel 1 goto :fail
+call :log "npm dependencies installed successfully."
+
+call :ensure_wasm_pack
+if errorlevel 1 goto :fail
+for /f "delims=" %%I in ('"%WASM_PACK%" --version 2^>nul') do call :log "wasm-pack version: %%I"
 
 call :log "Building WebAssembly package..."
 call npm run wasm >> "%LOG_FILE%" 2>&1
 if errorlevel 1 goto :fail
+call :log "WebAssembly package built successfully."
 
 call :log "Starting MapTool on port %PRIMARY_PORT% (fallback %FALLBACK_PORT%)..."
 call npm run dev -- --host --port %PRIMARY_PORT% --strictPort >> "%LOG_FILE%" 2>&1
@@ -77,8 +85,9 @@ call :log "Development server is running. Output is being written to %LOG_FILE%.
 goto :cleanup
 
 :fail
+set "FAILURE_CODE=%ERRORLEVEL%"
 call :log ""
-call :log "An error occurred. Review %LOG_FILE% for details."
+call :log "An error occurred (exit code %FAILURE_CODE%). Review %LOG_FILE% for details."
 goto :cleanup
 
 :cleanup
@@ -91,13 +100,12 @@ exit /b %ERRORLEVEL%
 :ensure_dependency
 set "TOOL=%~1"
 set "MESSAGE=%~2"
-where %TOOL% >nul 2>nul
-if errorlevel 1 (
-    call :log "%MESSAGE%"
-    exit /b 1
+for /f "delims=" %%I in ('where %TOOL% 2^>nul') do (
+    call :log "%TOOL% located at %%~I"
+    exit /b 0
 )
-call :log "%TOOL% located."
-exit /b 0
+call :log "%MESSAGE%"
+exit /b 1
 
 :locate_python
 for /f "delims=" %%I in ('where python 2^>nul') do (
@@ -110,6 +118,26 @@ for /f "delims=" %%I in ('where py 2^>nul') do (
 )
 exit /b 1
 :locate_python_success
+exit /b 0
+
+:ensure_wasm_pack
+set "WASM_PACK_CMD="
+for /f "delims=" %%I in ('where wasm-pack 2^>nul') do (
+    set "WASM_PACK_CMD=%%~I"
+    goto :ensure_wasm_pack_found
+)
+for %%F in ("%APP_DIR%\node_modules\.bin\wasm-pack.cmd" "%APP_DIR%\node_modules\.bin\wasm-pack.exe" "%APP_DIR%\node_modules\.bin\wasm-pack.ps1") do (
+    if exist %%~F (
+        set "WASM_PACK_CMD=%%~fF"
+        goto :ensure_wasm_pack_found
+    )
+)
+call :log "wasm-pack CLI not found. Install it by running `npm install wasm-pack --save-dev` in %APP_DIR% or add it to your PATH."
+exit /b 1
+:ensure_wasm_pack_found
+call :log "wasm-pack located at !WASM_PACK_CMD!"
+set "PATH=%APP_DIR%\node_modules\.bin;%PATH%"
+set "WASM_PACK=!WASM_PACK_CMD!"
 exit /b 0
 
 :ensure_virtualenv
