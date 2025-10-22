@@ -183,16 +183,24 @@ if errorlevel 1 goto :fail
 call :log "Python environment setup completed successfully."
 
 call :log_section "Node Dependency Installation"
+call :log_npm_configuration
 call :log "Installing npm dependencies (this may take a moment)..."
 call :run_command npm install
 if errorlevel 1 (
     call :log "npm install failed. Review the logged output above for the exact error."
+    call :log "If peer dependency conflicts occur, compare package.json requirements with the versions reported above."
     goto :fail
 )
+call :log "npm install completed successfully."
 if exist "%CD%\node_modules" (
     call :log "npm dependencies installed successfully and node_modules directory detected."
 ) else (
     call :log "npm reported success but node_modules was not found; investigate npm configuration."
+)
+if exist "%CD%\package-lock.json" (
+    call :log "package-lock.json detected after installation."
+) else (
+    call :log "package-lock.json not found after installation; npm may be configured to disable lockfiles."
 )
 
 call :log_section "WebAssembly Build"
@@ -252,6 +260,7 @@ if "%BOOTSTRAP_FAILED%"=="0" if "%FINAL_EXIT_CODE%"=="0" (
     call :log "MapTool bootstrap sequence ended with errors."
 )
 call :log "Detailed log saved to %LOG_FILE%."
+call :log "Bootstrap script exiting with code %FINAL_EXIT_CODE%."
 endlocal
 exit /b %FINAL_EXIT_CODE%
 
@@ -559,6 +568,121 @@ if exist "%APP_DIR%\requirements.txt" (
     call :log "No requirements.txt found; skipping Python dependency installation."
 )
 exit /b 0
+
+:log_npm_configuration
+setlocal enabledelayedexpansion
+call :log "Collecting npm configuration diagnostics..."
+call :log_npmrc_file "%CD%\.npmrc" "project-level"
+if defined USERPROFILE call :log_npmrc_file "%USERPROFILE%\.npmrc" "user-level"
+if defined PROGRAMFILES call :log_npmrc_file "%PROGRAMFILES%\nodejs\etc\npmrc" "global (ProgramFiles)"
+if defined APPDATA call :log_npmrc_file "%APPDATA%\npm\etc\npmrc" "global (AppData)"
+
+set "NPM_REGISTRY="
+for /f "delims=" %%I in ('npm config get registry 2^>nul') do set "NPM_REGISTRY=%%I"
+if defined NPM_REGISTRY (
+    call :log "npm config registry: !NPM_REGISTRY!"
+) else (
+    call :log "npm config registry: (no value returned)"
+)
+
+set "NPM_SCOPE_REGISTRY="
+for /f "delims=" %%I in ('npm config get @sveltejs:registry 2^>nul') do set "NPM_SCOPE_REGISTRY=%%I"
+if defined NPM_SCOPE_REGISTRY (
+    call :log "npm config @sveltejs:registry: !NPM_SCOPE_REGISTRY!"
+) else (
+    call :log "npm config @sveltejs:registry: (no value returned)"
+)
+
+set "NPM_PROXY="
+for /f "delims=" %%I in ('npm config get proxy 2^>nul') do set "NPM_PROXY=%%I"
+if /I "!NPM_PROXY!"=="undefined" set "NPM_PROXY="
+if /I "!NPM_PROXY!"=="null" set "NPM_PROXY="
+if defined NPM_PROXY (
+    call :log "npm config proxy: !NPM_PROXY!"
+) else (
+    call :log "npm config proxy: (not set)"
+)
+
+set "NPM_HTTPS_PROXY="
+for /f "delims=" %%I in ('npm config get https-proxy 2^>nul') do set "NPM_HTTPS_PROXY=%%I"
+if /I "!NPM_HTTPS_PROXY!"=="undefined" set "NPM_HTTPS_PROXY="
+if /I "!NPM_HTTPS_PROXY!"=="null" set "NPM_HTTPS_PROXY="
+if defined NPM_HTTPS_PROXY (
+    call :log "npm config https-proxy: !NPM_HTTPS_PROXY!"
+) else (
+    call :log "npm config https-proxy: (not set)"
+)
+
+set "NPM_USERCONFIG="
+for /f "delims=" %%I in ('npm config get userconfig 2^>nul') do set "NPM_USERCONFIG=%%I"
+if defined NPM_USERCONFIG call :log "npm userconfig path: !NPM_USERCONFIG!"
+
+set "NPM_GLOBALCONFIG="
+for /f "delims=" %%I in ('npm config get globalconfig 2^>nul') do set "NPM_GLOBALCONFIG=%%I"
+if defined NPM_GLOBALCONFIG call :log "npm globalconfig path: !NPM_GLOBALCONFIG!"
+
+set "NPM_CACHE_DIR="
+for /f "delims=" %%I in ('npm config get cache 2^>nul') do set "NPM_CACHE_DIR=%%I"
+if defined NPM_CACHE_DIR call :log "npm cache directory: !NPM_CACHE_DIR!"
+
+endlocal & exit /b 0
+
+:log_npmrc_file
+setlocal enabledelayedexpansion
+set "NPMRC_PATH=%~1"
+set "NPMRC_LABEL=%~2"
+if not defined NPMRC_LABEL set "NPMRC_LABEL=.npmrc"
+if not defined NPMRC_PATH (
+    endlocal & exit /b 0
+)
+set "NPMRC_CANON="
+for %%I in ("!NPMRC_PATH!") do set "NPMRC_CANON=%%~fI"
+if exist "!NPMRC_PATH!" (
+    if not defined NPMRC_CANON set "NPMRC_CANON=!NPMRC_PATH!"
+    call :log "Found !NPMRC_LABEL! .npmrc at !NPMRC_CANON!."
+    call :log "Contents of !NPMRC_LABEL! .npmrc (sensitive values redacted):"
+    for /f "usebackq delims=" %%L in ("!NPMRC_PATH!") do (
+        set "LINE=%%L"
+        if "!LINE!"=="" (
+            call :log "    (blank)"
+        ) else (
+            set "TRIM=!LINE!"
+            for /f "tokens=* delims= " %%T in ("!TRIM!") do set "TRIM=%%T"
+            set "FIRST=!TRIM:~0,1!"
+            if "!FIRST!"==";" (
+                call :log "    !LINE!"
+            ) else if "!FIRST!"=="#" (
+                call :log "    !LINE!"
+            ) else (
+                set "KEY="
+                set "VALUE="
+                for /f "tokens=1* delims==" %%A in ("!LINE!") do (
+                    if not defined KEY set "KEY=%%A"
+                    if not defined VALUE set "VALUE=%%B"
+                )
+                if defined KEY (
+                    set "SENSITIVE=0"
+                    set "CHECK=!KEY!"
+                    for %%S in (token auth password key secret) do (
+                        if /I not "!CHECK!"=="!CHECK:%%S=!" set "SENSITIVE=1"
+                    )
+                    if "!SENSITIVE!"=="1" (
+                        call :log "    !KEY!=<redacted>"
+                    ) else if defined VALUE (
+                        call :log "    !KEY!=!VALUE!"
+                    ) else (
+                        call :log "    !KEY!="
+                    )
+                ) else (
+                    call :log "    !LINE!"
+                )
+            )
+        )
+    )
+) else if defined NPMRC_CANON (
+    call :log "No !NPMRC_LABEL! .npmrc found at !NPMRC_CANON!."
+)
+endlocal & exit /b 0
 
 :log_section
 setlocal enabledelayedexpansion
