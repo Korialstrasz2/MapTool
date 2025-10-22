@@ -221,42 +221,72 @@ exit /b 0
 :create_virtualenv
 setlocal enabledelayedexpansion
 set "TARGET_DIR=%~1"
-set "CREATED_DIR=0"
 
-if not exist "!TARGET_DIR!" (
-    mkdir "!TARGET_DIR!" >nul 2>nul
-    if errorlevel 1 (
-        call :log "Unable to prepare directory !TARGET_DIR! for virtual environment creation."
-        endlocal & exit /b 1
-    )
-    set "CREATED_DIR=1"
+if not defined TARGET_DIR (
+    call :log "No target directory specified for virtual environment creation."
+    endlocal & exit /b 1
 )
 
-set "TARGET_CANON=!TARGET_DIR!"
-set "TARGET_SHORT="
+set "TARGET_CANON="
+set "TARGET_PARENT_RAW="
+set "TARGET_BASENAME="
 for %%I in ("!TARGET_DIR!") do (
     set "TARGET_CANON=%%~fI"
-    set "TARGET_SHORT=%%~sI"
+    set "TARGET_PARENT_RAW=%%~dpI"
+    set "TARGET_BASENAME=%%~nxI"
+)
+if not defined TARGET_CANON set "TARGET_CANON=!TARGET_DIR!"
+if not defined TARGET_PARENT_RAW for %%I in ("!TARGET_CANON!") do set "TARGET_PARENT_RAW=%%~dpI"
+if not defined TARGET_BASENAME for %%I in ("!TARGET_CANON!") do set "TARGET_BASENAME=%%~nxI"
+
+set "TARGET_PARENT_TRIM=!TARGET_PARENT_RAW!"
+if defined TARGET_PARENT_TRIM if "!TARGET_PARENT_TRIM:~-1!"=="\" set "TARGET_PARENT_TRIM=!TARGET_PARENT_TRIM:~0,-1!"
+
+set "TARGET_SHORT="
+if exist "!TARGET_CANON!" (
+    for %%I in ("!TARGET_CANON!") do set "TARGET_SHORT=%%~sI"
+) else (
+    mkdir "!TARGET_CANON!" >nul 2>nul
+    if not errorlevel 1 (
+        for %%I in ("!TARGET_CANON!") do set "TARGET_SHORT=%%~sI"
+    )
+    if exist "!TARGET_CANON!" rd /s /q "!TARGET_CANON!" >nul 2>nul
 )
 if not defined TARGET_SHORT set "TARGET_SHORT=!TARGET_CANON!"
 
+set "APP_CANON="
+for %%A in ("%APP_DIR%") do set "APP_CANON=%%~fA"
+if defined APP_CANON if "!APP_CANON:~-1!"=="\" set "APP_CANON=!APP_CANON:~0,-1!"
+
 call :run_command "%PYTHON_CMD%" -m venv "!TARGET_CANON!"
 set "EXITCODE=!ERRORLEVEL!"
-if not "!EXITCODE!"=="0" (
-    if defined TARGET_SHORT if /I not "!TARGET_SHORT!"=="!TARGET_CANON!" (
-        call :log "Virtual environment creation failed with exit code !EXITCODE!; retrying with short path !TARGET_SHORT!..."
-        call :run_command "%PYTHON_CMD%" -m venv "!TARGET_SHORT!"
-        set "EXITCODE=!ERRORLEVEL!"
-    )
-)
+if "!EXITCODE!"=="0" goto :create_virtualenv_success
 
-if not "!EXITCODE!"=="0" (
-    if "!CREATED_DIR!"=="1" (
-        rd /s /q "!TARGET_DIR!" >nul 2>nul
-    )
-)
+if exist "!TARGET_CANON!" rd /s /q "!TARGET_CANON!" >nul 2>nul
 
+if defined TARGET_PARENT_TRIM if defined APP_CANON if /I "!TARGET_PARENT_TRIM!"=="!APP_CANON!" if defined TARGET_BASENAME if exist "!TARGET_PARENT_TRIM!\" (
+    call :log "Virtual environment creation failed with exit code !EXITCODE!; retrying from !TARGET_PARENT_TRIM! using relative path !TARGET_BASENAME!..."
+    pushd "!TARGET_PARENT_TRIM!"
+    call :run_command "%PYTHON_CMD%" -m venv "!TARGET_BASENAME!"
+    set "EXITCODE=!ERRORLEVEL!"
+    popd
+)
+if "!EXITCODE!"=="0" goto :create_virtualenv_success
+
+if exist "!TARGET_CANON!" rd /s /q "!TARGET_CANON!" >nul 2>nul
+
+if defined TARGET_SHORT if /I not "!TARGET_SHORT!"=="!TARGET_CANON!" (
+    call :log "Virtual environment creation failed with exit code !EXITCODE!; retrying with short path !TARGET_SHORT!..."
+    call :run_command "%PYTHON_CMD%" -m venv "!TARGET_SHORT!"
+    set "EXITCODE=!ERRORLEVEL!"
+)
+if "!EXITCODE!"=="0" goto :create_virtualenv_success
+
+if exist "!TARGET_CANON!" rd /s /q "!TARGET_CANON!" >nul 2>nul
 endlocal & exit /b !EXITCODE!
+
+:create_virtualenv_success
+endlocal & exit /b 0
 
 :ensure_virtualenv
 set "VENV_DIR="
