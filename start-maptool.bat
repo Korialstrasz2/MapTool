@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 set "SCRIPT_DIR=%~dp0"
-set "REPO_URLS=https://github.com/RPTools/maptool-app.git https://github.com/RPTools/maptool.git https://github.com/JeremyTCD/MapTool.git"
+set "REPO_URLS=https://github.com/Korialstrasz2/MapTool.git"
 set "APP_DIR=%SCRIPT_DIR%maptool-app"
 set "PRIMARY_PORT=5173"
 set "FALLBACK_PORT=8010"
