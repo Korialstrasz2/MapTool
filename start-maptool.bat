@@ -1,79 +1,155 @@
 @echo off
 setlocal enabledelayedexpansion
 
+set "SCRIPT_DIR=%~dp0"
 set "REPO_URL=https://github.com/JeremyTCD/MapTool.git"
-set "APP_DIR=%~dp0maptool-app"
+set "APP_DIR=%SCRIPT_DIR%maptool-app"
 set "PRIMARY_PORT=5173"
 set "FALLBACK_PORT=8010"
 set "DID_PUSH=0"
+set "LOG_FILE=%SCRIPT_DIR%start-maptool.log"
+
+if exist "%LOG_FILE%" del "%LOG_FILE%" >nul 2>nul
+
+call :log "Starting MapTool bootstrap script."
+call :log "Log file: %LOG_FILE%"
 
 if not exist "%APP_DIR%" (
+    call :log "Creating application directory at %APP_DIR%..."
     mkdir "%APP_DIR%" >nul 2>nul
 )
 
-where git >nul 2>nul
+call :log "Checking required dependencies..."
+call :ensure_dependency git "Git is required but was not found in PATH."
+if errorlevel 1 goto :fail
+call :ensure_dependency npm "Node.js (npm) is required but was not found in PATH."
+if errorlevel 1 goto :fail
+call :ensure_dependency wasm-pack "wasm-pack is required but was not found in PATH. Install it from https://rustwasm.github.io/wasm-pack/installer/."
+if errorlevel 1 goto :fail
+call :locate_python
 if errorlevel 1 (
-    echo Git is required but was not found in PATH.
-    exit /b 1
+    call :log "Python is required to create a virtual environment but was not found in PATH."
+    goto :fail
 )
-
-where npm >nul 2>nul
-if errorlevel 1 (
-    echo Node.js (npm) is required but was not found in PATH.
-    exit /b 1
-)
-
-where wasm-pack >nul 2>nul
-if errorlevel 1 (
-    echo wasm-pack is required but was not found in PATH.
-    echo Install it from https://rustwasm.github.io/wasm-pack/installer/ and retry.
-    exit /b 1
-)
+call :log "Python located at %PYTHON_CMD%."
+call :log "Dependency check completed."
 
 if exist "%APP_DIR%\.git" (
     pushd "%APP_DIR%"
     set "DID_PUSH=1"
-    echo Updating existing MapTool checkout...
-    git fetch --tags --prune
+    call :log "Updating existing MapTool checkout..."
+    git fetch --tags --prune >> "%LOG_FILE%" 2>&1
     if errorlevel 1 goto :fail
-    git checkout main >nul 2>nul
+    git checkout main >> "%LOG_FILE%" 2>&1
     if errorlevel 1 goto :fail
-    git pull --ff-only
+    git pull --ff-only >> "%LOG_FILE%" 2>&1
     if errorlevel 1 goto :fail
 ) else (
-    echo Downloading the latest MapTool sources...
-    git clone "%REPO_URL%" "%APP_DIR%"
+    call :log "Downloading the latest MapTool sources..."
+    git clone "%REPO_URL%" "%APP_DIR%" >> "%LOG_FILE%" 2>&1
     if errorlevel 1 (
-        echo Failed to clone repository from %REPO_URL%.
-        exit /b 1
+        call :log "Failed to clone repository from %REPO_URL%."
+        goto :fail
     )
     pushd "%APP_DIR%"
     set "DID_PUSH=1"
 )
 
-echo Installing npm dependencies...
-call npm install
+call :ensure_virtualenv
 if errorlevel 1 goto :fail
 
-echo Building WebAssembly package...
-call npm run wasm
+call :log "Installing npm dependencies (this may take a moment)..."
+call npm install >> "%LOG_FILE%" 2>&1
 if errorlevel 1 goto :fail
 
-echo Starting MapTool on port %PRIMARY_PORT% (fallback %FALLBACK_PORT%)...
-call npm run dev -- --host --port %PRIMARY_PORT% --strictPort
+call :log "Building WebAssembly package..."
+call npm run wasm >> "%LOG_FILE%" 2>&1
+if errorlevel 1 goto :fail
+
+call :log "Starting MapTool on port %PRIMARY_PORT% (fallback %FALLBACK_PORT%)..."
+call npm run dev -- --host --port %PRIMARY_PORT% --strictPort >> "%LOG_FILE%" 2>&1
 if errorlevel 1 (
-    echo Port %PRIMARY_PORT% unavailable, retrying on %FALLBACK_PORT%...
-    call npm run dev -- --host --port %FALLBACK_PORT% --strictPort
+    call :log "Port %PRIMARY_PORT% unavailable, retrying on %FALLBACK_PORT%..."
+    call npm run dev -- --host --port %FALLBACK_PORT% --strictPort >> "%LOG_FILE%" 2>&1
     if errorlevel 1 goto :fail
 )
-
+call :log "Development server is running. Output is being written to %LOG_FILE%."
 goto :cleanup
 
 :fail
-echo.
-echo An error occurred. See messages above for details.
+call :log ""
+call :log "An error occurred. Review %LOG_FILE% for details."
+goto :cleanup
 
 :cleanup
 if "%DID_PUSH%"=="1" popd
+call :log ""
+call :log "Detailed log saved to %LOG_FILE%."
 endlocal
 exit /b %ERRORLEVEL%
+
+:ensure_dependency
+set "TOOL=%~1"
+set "MESSAGE=%~2"
+where %TOOL% >nul 2>nul
+if errorlevel 1 (
+    call :log "%MESSAGE%"
+    exit /b 1
+)
+call :log "%TOOL% located."
+exit /b 0
+
+:locate_python
+for /f "delims=" %%I in ('where python 2^>nul') do (
+    set "PYTHON_CMD=%%~I"
+    goto :locate_python_success
+)
+for /f "delims=" %%I in ('where py 2^>nul') do (
+    set "PYTHON_CMD=%%~I"
+    goto :locate_python_success
+)
+exit /b 1
+:locate_python_success
+exit /b 0
+
+:ensure_virtualenv
+set "VENV_DIR=%APP_DIR%\venv"
+if exist "%VENV_DIR%\Scripts\python.exe" (
+    call :log "Using existing Python virtual environment at %VENV_DIR%."
+) else (
+    call :log "Creating Python virtual environment at %VENV_DIR%..."
+    "%PYTHON_CMD%" -m venv "%VENV_DIR%" >> "%LOG_FILE%" 2>&1
+    if errorlevel 1 (
+        call :log "Failed to create Python virtual environment."
+        exit /b 1
+    )
+)
+if exist "%APP_DIR%\requirements.txt" (
+    call :log "Installing Python dependencies from requirements.txt..."
+    "%VENV_DIR%\Scripts\python.exe" -m pip install --upgrade pip >> "%LOG_FILE%" 2>&1
+    if errorlevel 1 (
+        call :log "Failed to upgrade pip inside the virtual environment."
+        exit /b 1
+    )
+    "%VENV_DIR%\Scripts\pip.exe" install -r "%APP_DIR%\requirements.txt" >> "%LOG_FILE%" 2>&1
+    if errorlevel 1 (
+        call :log "Failed to install Python dependencies."
+        exit /b 1
+    )
+) else (
+    call :log "No requirements.txt found; skipping Python dependency installation."
+)
+exit /b 0
+
+:log
+setlocal enabledelayedexpansion
+set "MESSAGE=%~1"
+if "%~1"=="" (
+    echo.
+    >> "%LOG_FILE%" echo.
+) else (
+    echo(!MESSAGE!
+    >> "%LOG_FILE%" echo [%DATE% %TIME%] !MESSAGE!
+)
+endlocal
+exit /b 0
