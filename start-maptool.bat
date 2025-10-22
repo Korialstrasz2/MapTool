@@ -66,7 +66,7 @@ if exist "%APP_DIR%\.git" (
     call :log "Downloading the latest MapTool sources..."
     call :clone_repository
     if errorlevel 1 goto :fail
-    if defined REPO_URL_USED call :log "Repository cloned from %REPO_URL_USED%."
+    if defined REPO_URL_USED call :log "Repository cloned from !REPO_URL_USED!."
     pushd "%APP_DIR%"
     set "DID_PUSH=1"
 )
@@ -218,26 +218,95 @@ set "PATH=%APP_DIR%\node_modules\.bin;%PATH%"
 set "WASM_PACK=!WASM_PACK_CMD!"
 exit /b 0
 
-:ensure_virtualenv
-set "VENV_DIR=%APP_DIR%\venv"
-if exist "%VENV_DIR%\Scripts\python.exe" (
-    call :log "Using existing Python virtual environment at %VENV_DIR%."
-) else (
-    call :log "Creating Python virtual environment at %VENV_DIR%..."
-    call :run_command "%PYTHON_CMD%" -m venv "%VENV_DIR%"
+:create_virtualenv
+setlocal enabledelayedexpansion
+set "TARGET_DIR=%~1"
+set "CREATED_DIR=0"
+
+if not exist "!TARGET_DIR!" (
+    mkdir "!TARGET_DIR!" >nul 2>nul
     if errorlevel 1 (
-        call :log "Failed to create Python virtual environment."
-        exit /b 1
+        call :log "Unable to prepare directory !TARGET_DIR! for virtual environment creation."
+        endlocal & exit /b 1
+    )
+    set "CREATED_DIR=1"
+)
+
+set "TARGET_CANON=!TARGET_DIR!"
+set "TARGET_SHORT="
+for %%I in ("!TARGET_DIR!") do (
+    set "TARGET_CANON=%%~fI"
+    set "TARGET_SHORT=%%~sI"
+)
+if not defined TARGET_SHORT set "TARGET_SHORT=!TARGET_CANON!"
+
+call :run_command "%PYTHON_CMD%" -m venv "!TARGET_CANON!"
+set "EXITCODE=!ERRORLEVEL!"
+if not "!EXITCODE!"=="0" (
+    if defined TARGET_SHORT if /I not "!TARGET_SHORT!"=="!TARGET_CANON!" (
+        call :log "Virtual environment creation failed with exit code !EXITCODE!; retrying with short path !TARGET_SHORT!..."
+        call :run_command "%PYTHON_CMD%" -m venv "!TARGET_SHORT!"
+        set "EXITCODE=!ERRORLEVEL!"
     )
 )
+
+if not "!EXITCODE!"=="0" (
+    if "!CREATED_DIR!"=="1" (
+        rd /s /q "!TARGET_DIR!" >nul 2>nul
+    )
+)
+
+endlocal & exit /b !EXITCODE!
+
+:ensure_virtualenv
+set "VENV_DIR="
+set "VENV_STATUS=new"
+for %%D in (.venv venv) do (
+    if not defined VENV_DIR if exist "%APP_DIR%\%%D\Scripts\python.exe" (
+        set "VENV_DIR=%APP_DIR%\%%D"
+        set "VENV_STATUS=existing"
+    )
+)
+if not defined VENV_DIR (
+    set "VENV_DIR=%APP_DIR%\.venv"
+)
+
+if "%VENV_STATUS%"=="existing" (
+    call :log "Using existing Python virtual environment at !VENV_DIR!."
+) else (
+    call :log "Creating Python virtual environment at !VENV_DIR!..."
+    call :create_virtualenv "!VENV_DIR!"
+    if errorlevel 1 (
+        set "FALLBACK_VENV=%APP_DIR%\venv"
+        if /I "!VENV_DIR!"=="!FALLBACK_VENV!" (
+            call :log "Failed to create Python virtual environment."
+            exit /b 1
+        )
+        call :log "Retrying virtual environment creation in legacy folder !FALLBACK_VENV!..."
+        call :create_virtualenv "!FALLBACK_VENV!"
+        if errorlevel 1 (
+            call :log "Failed to create Python virtual environment."
+            exit /b 1
+        )
+        set "VENV_DIR=!FALLBACK_VENV!"
+    )
+)
+
+if exist "!VENV_DIR!\Scripts\python.exe" (
+    call :log "Python virtual environment ready at !VENV_DIR!."
+) else (
+    call :log "Python executable not found in !VENV_DIR! after virtual environment setup."
+    exit /b 1
+)
+
 if exist "%APP_DIR%\requirements.txt" (
     call :log "Installing Python dependencies from requirements.txt..."
-    call :run_command "%VENV_DIR%\Scripts\python.exe" -m pip install --upgrade pip
+    call :run_command "!VENV_DIR!\Scripts\python.exe" -m pip install --upgrade pip
     if errorlevel 1 (
         call :log "Failed to upgrade pip inside the virtual environment."
         exit /b 1
     )
-    call :run_command "%VENV_DIR%\Scripts\pip.exe" install -r "%APP_DIR%\requirements.txt"
+    call :run_command "!VENV_DIR!\Scripts\pip.exe" install -r "%APP_DIR%\requirements.txt"
     if errorlevel 1 (
         call :log "Failed to install Python dependencies."
         exit /b 1
