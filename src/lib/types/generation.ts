@@ -6,8 +6,6 @@ export type LayerKind =
   | 'settlements'
   | 'landcover';
 
-export type GeneratorType = 'continental' | 'archipelago' | 'highlands' | 'weitou-delta';
-
 export type BiomeId =
   | 'ocean'
   | 'lake'
@@ -24,15 +22,11 @@ export interface GeneratorParameters {
   width: number;
   height: number;
   seed: number;
-  generatorType: GeneratorType;
   seaLevel: number;
   elevationAmplitude: number;
   warpStrength: number;
   erosionIterations: number;
   moistureScale: number;
-  featureScale: number;
-  riverStrength: number;
-  temperatureBias: number;
 }
 
 export interface GeneratorResult {
