@@ -8,12 +8,8 @@ import type {
   WorkerStatus,
   WorkerStatusStage
 } from '$lib/types/generation';
-import type { TerrainWasmModule } from '$lib/wasm/terrain';
-import { loadTerrainWasm } from '$lib/wasm/terrain';
-
-let modulePromise: Promise<TerrainWasmModule> | null = null;
-let moduleLoaded = false;
-
+import { GENERATOR_LABELS } from '$lib/generation/registry';
+import { runGenerator } from '$lib/generation/systems';
 function postStatus(stage: WorkerStatusStage, message: string) {
   const status: WorkerStatus = { type: 'status', stage, message };
   ctx.postMessage(status);
@@ -21,7 +17,7 @@ function postStatus(stage: WorkerStatusStage, message: string) {
 
 const ctx: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobalScope;
 
-ctx.onmessage = async (event: MessageEvent<WorkerRequest>) => {
+ctx.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const { data } = event;
 
   if (data.type !== 'generate') {
@@ -29,27 +25,20 @@ ctx.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   }
 
   try {
-    if (!modulePromise) {
-      console.info('[MapTool][Worker] Loading terrain WebAssembly module…');
-      postStatus('loading-module', 'Loading terrain engine…');
-      modulePromise = loadTerrainWasm();
-    }
+    const params: GeneratorParameters = data.params;
+    const label = GENERATOR_LABELS[params.generatorType] ?? 'Custom terrain';
 
-    const module = await modulePromise;
-
-    if (!moduleLoaded) {
-      moduleLoaded = true;
-      postStatus('module-ready', 'Terrain engine ready.');
-    }
-
-    postStatus('generating', 'Running terrain simulation…');
+    postStatus('loading-module', `Configuring ${label.toLowerCase()} generator…`);
+    postStatus('module-ready', `${label} parameters ready.`);
+    postStatus('generating', `Synthesizing ${label.toLowerCase()} terrain…`);
     console.info('[MapTool][Worker] Starting generation', {
-      seed: data.params.seed,
-      width: data.params.width,
-      height: data.params.height
+      seed: params.seed,
+      width: params.width,
+      height: params.height,
+      generatorType: params.generatorType
     });
     const start = performance.now();
-    const payload = runGenerator(module, data.params);
+    const payload = runGenerator(params);
     const durationMs = performance.now() - start;
     postStatus('transferring', 'Finalizing map data…');
     console.info('[MapTool][Worker] Generation completed', {
@@ -71,34 +60,5 @@ ctx.onmessage = async (event: MessageEvent<WorkerRequest>) => {
     ctx.postMessage(response);
   }
 };
-
-function runGenerator(module: TerrainWasmModule, params: GeneratorParameters) {
-  const { width, height, seed, seaLevel, elevationAmplitude, warpStrength, erosionIterations, moistureScale } = params;
-  const result = module.generate_map(
-    width,
-    height,
-    seed >>> 0,
-    seaLevel,
-    elevationAmplitude,
-    warpStrength,
-    erosionIterations,
-    moistureScale
-  );
-
-  return {
-    width: result.width,
-    height: result.height,
-    heightmap: result.heightmap.slice(),
-    flow: result.flow.slice(),
-    moisture: result.moisture.slice(),
-    temperature: result.temperature.slice(),
-    biome: result.biome.slice(),
-    water: result.water.slice(),
-    roadGraph: result.roadGraph ? result.roadGraph.map((entry) => [...entry] as [number, number]) : undefined,
-    settlements: result.settlements
-      ? result.settlements.map((settlement) => ({ ...settlement }))
-      : undefined
-  };
-}
 
 export {};
