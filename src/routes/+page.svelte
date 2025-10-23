@@ -18,7 +18,9 @@
     GenerationTimelineStage
   } from '$stores/generatorStore';
   import type { WorkerMessage } from '$lib/types/generation';
-  import type { GeneratorParameters } from '$lib/types/generation';
+  import type { GeneratorParameters, GeneratorType } from '$lib/types/generation';
+  import type { GeneratorMetadata } from '$lib/generation/registry';
+  import { GENERATOR_METADATA, GENERATOR_LABELS } from '$lib/generation/registry';
   import { MapRenderer } from '$lib/render/MapRenderer';
 
   let canvasContainer: HTMLDivElement | null = null;
@@ -35,10 +37,10 @@
   const STAGE_LABELS: Record<GenerationTimelineStage, string> = {
     requesting: 'Dispatching',
     'renderer-ready': 'Renderer ready',
-    'loading-module': 'Loading engine',
-    'module-ready': 'Engine ready',
-    generating: 'Generating terrain',
-    transferring: 'Transferring data',
+    'loading-module': 'Configuring generator',
+    'module-ready': 'Generator ready',
+    generating: 'Synthesizing terrain',
+    transferring: 'Finalizing data',
     rendering: 'Rendering map',
     ready: 'Complete',
     error: 'Error'
@@ -48,7 +50,11 @@
     seed: 'Seed',
     width: 'Width',
     height: 'Height',
-    generatorDurationMs: 'Generator time'
+    generatorDurationMs: 'Generator time',
+    generatorType: 'Generator',
+    featureScale: 'Feature scale',
+    riverStrength: 'River strength',
+    temperatureBias: 'Temperature bias'
   };
 
   function formatDuration(ms: number): string {
@@ -115,6 +121,11 @@
 
   $: timelineEntries = $generationTimeline;
   $: latestTimelineEntry = timelineEntries.at(-1);
+  let activeGenerator: GeneratorMetadata = GENERATOR_METADATA[0];
+  $:
+    activeGenerator =
+      GENERATOR_METADATA.find((entry) => entry.type === $generatorParameters.generatorType) ??
+      GENERATOR_METADATA[0];
 
   onMount(() => {
     if (!canUseBrowser || !canvasContainer) {
@@ -268,7 +279,11 @@
     appendGenerationTimeline('requesting', 'Dispatching parameters to worker…', {
       seed: params.seed,
       width: params.width,
-      height: params.height
+      height: params.height,
+      generatorType: GENERATOR_LABELS[params.generatorType] ?? params.generatorType,
+      featureScale: params.featureScale,
+      riverStrength: params.riverStrength,
+      temperatureBias: params.temperatureBias
     });
     isGenerating.set(true);
     generationStatus.set('Preparing generation…');
@@ -286,6 +301,19 @@
       [key]: value
     }));
     console.info('[MapTool] Updated generator parameter', { key, value });
+  }
+
+  function updateGeneratorType(type: GeneratorType) {
+    generatorParameters.update((params) => ({
+      ...params,
+      generatorType: type
+    }));
+    console.info('[MapTool] Switched generator', { type });
+  }
+
+  function formatSigned(value: number, decimals = 2): string {
+    const fixed = value.toFixed(decimals);
+    return value >= 0 ? `+${fixed}` : fixed;
   }
 </script>
 
@@ -377,14 +405,32 @@
       {/if}
     </section>
 
+    <section class="generator-select">
+      <h2>Generator system</h2>
+      <label>
+        System
+        <select
+          value={$generatorParameters.generatorType}
+          on:change={(event) => updateGeneratorType(event.currentTarget.value as GeneratorType)}
+          disabled={$isGenerating}
+        >
+          {#each GENERATOR_METADATA as generator}
+            <option value={generator.type}>{generator.label}</option>
+          {/each}
+        </select>
+      </label>
+      <p class="meta">{activeGenerator.description}</p>
+      <p class="generator-detail">{activeGenerator.longDescription}</p>
+    </section>
+
     <section>
-      <h2>Terrain</h2>
+      <h2>Terrain structure</h2>
       <label>
         Sea level
         <input
           type="range"
-          min="0.2"
-          max="0.7"
+          min="0.15"
+          max="0.85"
           step="0.01"
           bind:value={$generatorParameters.seaLevel}
           on:change={(event) => updateParam('seaLevel', parseFloat(event.currentTarget.value))}
@@ -392,11 +438,23 @@
         <span>{$generatorParameters.seaLevel.toFixed(2)}</span>
       </label>
       <label>
-        Elevation amplitude
+        Feature scale
         <input
           type="range"
           min="0.4"
-          max="1.5"
+          max="3"
+          step="0.05"
+          bind:value={$generatorParameters.featureScale}
+          on:change={(event) => updateParam('featureScale', parseFloat(event.currentTarget.value))}
+        />
+        <span>{$generatorParameters.featureScale.toFixed(2)}</span>
+      </label>
+      <label>
+        Elevation amplitude
+        <input
+          type="range"
+          min="0.3"
+          max="2"
           step="0.05"
           bind:value={$generatorParameters.elevationAmplitude}
           on:change={(event) =>
@@ -409,7 +467,7 @@
         <input
           type="range"
           min="0"
-          max="200"
+          max="240"
           step="5"
           bind:value={$generatorParameters.warpStrength}
           on:change={(event) => updateParam('warpStrength', parseFloat(event.currentTarget.value))}
@@ -417,23 +475,7 @@
         <span>{$generatorParameters.warpStrength.toFixed(0)}</span>
       </label>
       <label>
-        Moisture scale
-        <input
-          type="range"
-          min="0.2"
-          max="2"
-          step="0.05"
-          bind:value={$generatorParameters.moistureScale}
-          on:change={(event) => updateParam('moistureScale', parseFloat(event.currentTarget.value))}
-        />
-        <span>{$generatorParameters.moistureScale.toFixed(2)}</span>
-      </label>
-    </section>
-
-    <section>
-      <h2>Erosion</h2>
-      <label>
-        Iterations
+        Terrain smoothing
         <input
           type="range"
           min="0"
@@ -444,6 +486,47 @@
             updateParam('erosionIterations', parseInt(event.currentTarget.value, 10))}
         />
         <span>{$generatorParameters.erosionIterations}</span>
+      </label>
+    </section>
+
+    <section>
+      <h2>Hydrology &amp; climate</h2>
+      <label>
+        River strength
+        <input
+          type="range"
+          min="0"
+          max="2"
+          step="0.05"
+          bind:value={$generatorParameters.riverStrength}
+          on:change={(event) => updateParam('riverStrength', parseFloat(event.currentTarget.value))}
+        />
+        <span>{$generatorParameters.riverStrength.toFixed(2)}</span>
+      </label>
+      <label>
+        Moisture scale
+        <input
+          type="range"
+          min="0.2"
+          max="2.5"
+          step="0.05"
+          bind:value={$generatorParameters.moistureScale}
+          on:change={(event) => updateParam('moistureScale', parseFloat(event.currentTarget.value))}
+        />
+        <span>{$generatorParameters.moistureScale.toFixed(2)}</span>
+      </label>
+      <label>
+        Temperature bias
+        <input
+          type="range"
+          min="-0.5"
+          max="0.5"
+          step="0.02"
+          bind:value={$generatorParameters.temperatureBias}
+          on:change={(event) =>
+            updateParam('temperatureBias', parseFloat(event.currentTarget.value))}
+        />
+        <span>{formatSigned($generatorParameters.temperatureBias)}</span>
       </label>
     </section>
 
@@ -761,6 +844,14 @@
     width: 100%;
   }
 
+  select {
+    padding: 0.5rem;
+    border-radius: 0.4rem;
+    border: 1px solid rgba(148, 163, 184, 0.4);
+    background: rgba(15, 23, 42, 0.6);
+    color: inherit;
+  }
+
   button {
     appearance: none;
     border: none;
@@ -782,6 +873,18 @@
     display: flex;
     gap: 0.75rem;
     margin-top: 0.75rem;
+  }
+
+  .generator-select .meta {
+    margin: 0.5rem 0 0.35rem;
+    color: rgba(226, 232, 240, 0.75);
+  }
+
+  .generator-detail {
+    margin: 0;
+    font-size: 0.85rem;
+    line-height: 1.4;
+    color: rgba(148, 163, 184, 0.9);
   }
 
   .meta {

@@ -9,11 +9,15 @@ const DEFAULT_PARAMS: GeneratorParameters = {
   width: 512,
   height: 512,
   seed: 1337,
+  generatorType: 'continental',
   seaLevel: 0.48,
   elevationAmplitude: 0.9,
   warpStrength: 80,
   erosionIterations: 2,
-  moistureScale: 1.0
+  moistureScale: 1.0,
+  featureScale: 1.1,
+  riverStrength: 0.45,
+  temperatureBias: 0
 };
 
 export const generatorParameters = writable<GeneratorParameters>(DEFAULT_PARAMS);
