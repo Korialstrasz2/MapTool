@@ -2,7 +2,6 @@
 
 import type {
   GeneratorParameters,
-  GeneratorSettings,
   WorkerRequest,
   WorkerResponse,
   WorkerError,
@@ -11,12 +10,6 @@ import type {
 } from '$lib/types/generation';
 import type { TerrainWasmModule } from '$lib/wasm/terrain';
 import { loadTerrainWasm } from '$lib/wasm/terrain';
-import { getGeneratorDefinition, mergeWithDefaults } from '$lib/config/generators';
-import {
-  generateArchipelago,
-  generateRidgeBasin,
-  generateWeitouDelta
-} from './custom-generators';
 
 let modulePromise: Promise<TerrainWasmModule> | null = null;
 let moduleLoaded = false;
@@ -36,36 +29,27 @@ ctx.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   }
 
   try {
-    const params = data.params;
-    const definition = getGeneratorDefinition(params.generatorId);
-    const settings = mergeWithDefaults(definition, params.settings);
-
-    let module: TerrainWasmModule | null = null;
-
-    if (params.generatorId === 'continental') {
-      if (!modulePromise) {
-        console.info('[MapTool][Worker] Loading terrain WebAssembly module…');
-        postStatus('loading-module', 'Loading terrain engine…');
-        modulePromise = loadTerrainWasm();
-      }
-
-      module = await modulePromise;
-
-      if (!moduleLoaded) {
-        moduleLoaded = true;
-        postStatus('module-ready', 'Terrain engine ready.');
-      }
+    if (!modulePromise) {
+      console.info('[MapTool][Worker] Loading terrain WebAssembly module…');
+      postStatus('loading-module', 'Loading terrain engine…');
+      modulePromise = loadTerrainWasm();
     }
 
-    postStatus('generating', definition.statusMessage);
+    const module = await modulePromise;
+
+    if (!moduleLoaded) {
+      moduleLoaded = true;
+      postStatus('module-ready', 'Terrain engine ready.');
+    }
+
+    postStatus('generating', 'Running terrain simulation…');
     console.info('[MapTool][Worker] Starting generation', {
-      generator: params.generatorId,
-      seed: params.seed,
-      width: params.width,
-      height: params.height
+      seed: data.params.seed,
+      width: data.params.width,
+      height: data.params.height
     });
     const start = performance.now();
-    const payload = runGenerator(module, params, settings);
+    const payload = runGenerator(module, data.params);
     const durationMs = performance.now() - start;
     postStatus('transferring', 'Finalizing map data…');
     console.info('[MapTool][Worker] Generation completed', {
@@ -88,43 +72,12 @@ ctx.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   }
 };
 
-function runGenerator(
-  module: TerrainWasmModule | null,
-  params: GeneratorParameters,
-  settings: GeneratorSettings
-) {
-  switch (params.generatorId) {
-    case 'continental':
-      if (!module) {
-        throw new Error('Terrain engine not available for continental generator.');
-      }
-      return runContinentalGenerator(module, params, settings);
-    case 'archipelago':
-      return generateArchipelago(params, settings);
-    case 'ridge-basin':
-      return generateRidgeBasin(params, settings);
-    case 'weitou-delta':
-      return generateWeitouDelta(params, settings);
-    default:
-      throw new Error(`Unknown generator: ${params.generatorId}`);
-  }
-}
-
-function runContinentalGenerator(
-  module: TerrainWasmModule,
-  params: GeneratorParameters,
-  settings: GeneratorSettings
-) {
-  const seaLevel = settings.seaLevel ?? 0.48;
-  const elevationAmplitude = settings.elevationAmplitude ?? 0.9;
-  const warpStrength = settings.warpStrength ?? 80;
-  const erosionIterations = Math.round(settings.erosionIterations ?? 2);
-  const moistureScale = settings.moistureScale ?? 1.0;
-
+function runGenerator(module: TerrainWasmModule, params: GeneratorParameters) {
+  const { width, height, seed, seaLevel, elevationAmplitude, warpStrength, erosionIterations, moistureScale } = params;
   const result = module.generate_map(
-    params.width,
-    params.height,
-    params.seed >>> 0,
+    width,
+    height,
+    seed >>> 0,
     seaLevel,
     elevationAmplitude,
     warpStrength,
