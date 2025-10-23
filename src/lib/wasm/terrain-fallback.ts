@@ -1,5 +1,4 @@
 import seedrandom from 'seedrandom';
-import type { GeneratorParameters } from '$lib/types/generation';
 import type { TerrainGeneration, TerrainWasmModule } from './terrain';
 
 const BIOME_MAP: Array<{ elevation: number; moisture: number; temperature: number; index: number }> = [
@@ -43,9 +42,17 @@ function pickBiome(elevation: number, moisture: number, temperature: number): nu
   return best.index;
 }
 
-function createGenerator(seed: number, params: GeneratorParameters) {
+function createGenerator(
+  seed: number,
+  width: number,
+  height: number,
+  seaLevel: number,
+  elevationAmplitude: number,
+  warpStrength: number,
+  erosionIterations: number,
+  moistureScale: number
+) {
   const rng = seedrandom(String(seed >>> 0));
-  const { width, height, seaLevel, elevationAmplitude, warpStrength, erosionIterations, moistureScale } = params;
 
   return (x: number, y: number) => {
     const nx = x / Math.max(1, width - 1);
@@ -98,17 +105,16 @@ const fallbackModule: TerrainWasmModule = {
     const biome = new Uint8Array(size);
     const water = new Float32Array(size);
 
-    const params: GeneratorParameters = {
+    const generator = createGenerator(
+      seed,
       width,
       height,
-      seed,
       seaLevel,
       elevationAmplitude,
       warpStrength,
       erosionIterations,
       moistureScale
-    };
-    const generator = createGenerator(seed, params);
+    );
 
     for (let y = 0; y < height; y += 1) {
       for (let x = 0; x < width; x += 1) {

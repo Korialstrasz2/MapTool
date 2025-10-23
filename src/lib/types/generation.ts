@@ -18,15 +18,19 @@ export type BiomeId =
   | 'desert'
   | 'alpine';
 
+export type GeneratorSystemId =
+  | 'terrain-wasm'
+  | 'voronoi-provinces'
+  | 'tectonic-plates'
+  | 'fractured-basins';
+
 export interface GeneratorParameters {
   width: number;
   height: number;
   seed: number;
-  seaLevel: number;
-  elevationAmplitude: number;
-  warpStrength: number;
-  erosionIterations: number;
-  moistureScale: number;
+  systemId: GeneratorSystemId;
+  variantId: string;
+  values: Record<string, number>;
 }
 
 export interface GeneratorResult {
