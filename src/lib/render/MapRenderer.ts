@@ -205,7 +205,11 @@ export class MapRenderer {
   }
 
   #textureFromRgba(data: Uint8ClampedArray, width: number, height: number): Texture {
-    const imageData = new ImageData(data, width, height);
-    return Texture.from(imageData);
+    // PIXI v8 no longer accepts ImageData instances when constructing textures.
+    // Using `Texture.fromBuffer` avoids relying on browser-specific globals and
+    // works consistently in web workers and during SSR.
+    const buffer =
+      data instanceof Uint8Array ? data : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    return Texture.fromBuffer(buffer, width, height);
   }
 }
