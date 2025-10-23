@@ -1,25 +1,32 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte';
-  import { get } from 'svelte/store';
-  import {
-    generatorParameters,
-    generatorResult,
-    isGenerating,
-    lastDuration,
-    summary,
-    randomizeSeed,
-    generationStatus,
-    generationTimeline,
-    resetGenerationTimeline,
-    appendGenerationTimeline
-  } from '$stores/generatorStore';
-  import type {
-    GenerationTimelineEntry,
-    GenerationTimelineStage
-  } from '$stores/generatorStore';
-  import type { WorkerMessage } from '$lib/types/generation';
-  import type { GeneratorParameters } from '$lib/types/generation';
-  import { MapRenderer } from '$lib/render/MapRenderer';
+import { onDestroy, onMount } from 'svelte';
+import { get } from 'svelte/store';
+import {
+  generatorParameters,
+  generatorResult,
+  isGenerating,
+  lastDuration,
+  summary,
+  randomizeSeed,
+  generationStatus,
+  generationTimeline,
+  resetGenerationTimeline,
+  appendGenerationTimeline,
+  currentGeneratorDefinition,
+  currentVariantDefinition,
+  setGeneratorSystem,
+  setGeneratorVariant,
+  updateGeneratorValue,
+  generatorCatalog
+} from '$stores/generatorStore';
+import type {
+  GenerationTimelineEntry,
+  GenerationTimelineStage
+} from '$stores/generatorStore';
+import type { WorkerMessage } from '$lib/types/generation';
+import type { GeneratorSystemId } from '$lib/types/generation';
+import { MapRenderer } from '$lib/render/MapRenderer';
+import type { GeneratorOptionDefinition } from '$lib/generators/catalog';
 
   let canvasContainer: HTMLDivElement | null = null;
   let worker: Worker | null = null;
@@ -48,8 +55,44 @@
     seed: 'Seed',
     width: 'Width',
     height: 'Height',
-    generatorDurationMs: 'Generator time'
+    generatorDurationMs: 'Generator time',
+    generator: 'Generator',
+    variant: 'Variant'
   };
+
+  interface OptionGroup {
+    section: string;
+    options: GeneratorOptionDefinition[];
+  }
+
+  function groupOptions(options: GeneratorOptionDefinition[]): OptionGroup[] {
+    const map = new Map<string, GeneratorOptionDefinition[]>();
+    for (const option of options) {
+      if (!map.has(option.section)) {
+        map.set(option.section, []);
+      }
+      map.get(option.section)?.push(option);
+    }
+    return Array.from(map.entries()).map(([section, sectionOptions]) => ({
+      section,
+      options: sectionOptions
+    }));
+  }
+
+  function formatOptionValue(option: GeneratorOptionDefinition, value: number | undefined): string {
+    if (value === undefined || Number.isNaN(value)) {
+      return '';
+    }
+    if (option.precision !== undefined) {
+      return `${value.toFixed(option.precision)}${option.unit ?? ''}`;
+    }
+    if (Number.isInteger(option.step)) {
+      return `${value.toFixed(0)}${option.unit ?? ''}`;
+    }
+    return `${value.toFixed(2)}${option.unit ?? ''}`;
+  }
+
+  let optionGroups: OptionGroup[] = [];
 
   function formatDuration(ms: number): string {
     if (ms <= 0) {
@@ -115,6 +158,9 @@
 
   $: timelineEntries = $generationTimeline;
   $: latestTimelineEntry = timelineEntries.at(-1);
+  $: optionGroups = $currentGeneratorDefinition
+    ? groupOptions($currentGeneratorDefinition.options)
+    : [];
 
   onMount(() => {
     if (!canUseBrowser || !canvasContainer) {
@@ -258,6 +304,8 @@
       console.warn('[MapTool] Trigger requested before renderer finished initialization.');
     }
     const params = get(generatorParameters);
+    const generatorDef = get(currentGeneratorDefinition);
+    const variantDef = get(currentVariantDefinition);
     resetGenerationTimeline();
     if (rendererReady && canvasContainer) {
       appendGenerationTimeline('renderer-ready', 'Renderer ready.', {
@@ -268,7 +316,9 @@
     appendGenerationTimeline('requesting', 'Dispatching parameters to worker…', {
       seed: params.seed,
       width: params.width,
-      height: params.height
+      height: params.height,
+      generator: generatorDef?.name,
+      variant: variantDef?.name
     });
     isGenerating.set(true);
     generationStatus.set('Preparing generation…');
@@ -280,13 +330,6 @@
     worker.postMessage({ type: 'generate', params });
   }
 
-  function updateParam(key: keyof GeneratorParameters, value: number) {
-    generatorParameters.update((params) => ({
-      ...params,
-      [key]: value
-    }));
-    console.info('[MapTool] Updated generator parameter', { key, value });
-  }
 </script>
 
 <svelte:window on:keydown={(event) => {
@@ -378,74 +421,80 @@
     </section>
 
     <section>
-      <h2>Terrain</h2>
-      <label>
-        Sea level
-        <input
-          type="range"
-          min="0.2"
-          max="0.7"
-          step="0.01"
-          bind:value={$generatorParameters.seaLevel}
-          on:change={(event) => updateParam('seaLevel', parseFloat(event.currentTarget.value))}
-        />
-        <span>{$generatorParameters.seaLevel.toFixed(2)}</span>
-      </label>
-      <label>
-        Elevation amplitude
-        <input
-          type="range"
-          min="0.4"
-          max="1.5"
-          step="0.05"
-          bind:value={$generatorParameters.elevationAmplitude}
+      <h2>Generator</h2>
+      <label class="stacked">
+        <span>System</span>
+        <select
+          value={$generatorParameters.systemId}
           on:change={(event) =>
-            updateParam('elevationAmplitude', parseFloat(event.currentTarget.value))}
-        />
-        <span>{$generatorParameters.elevationAmplitude.toFixed(2)}</span>
+            setGeneratorSystem(event.currentTarget.value as GeneratorSystemId)}
+          disabled={$isGenerating}
+        >
+          {#each generatorCatalog as generator}
+            <option value={generator.id}>{generator.name}</option>
+          {/each}
+        </select>
       </label>
-      <label>
-        Warp strength
-        <input
-          type="range"
-          min="0"
-          max="200"
-          step="5"
-          bind:value={$generatorParameters.warpStrength}
-          on:change={(event) => updateParam('warpStrength', parseFloat(event.currentTarget.value))}
-        />
-        <span>{$generatorParameters.warpStrength.toFixed(0)}</span>
-      </label>
-      <label>
-        Moisture scale
-        <input
-          type="range"
-          min="0.2"
-          max="2"
-          step="0.05"
-          bind:value={$generatorParameters.moistureScale}
-          on:change={(event) => updateParam('moistureScale', parseFloat(event.currentTarget.value))}
-        />
-        <span>{$generatorParameters.moistureScale.toFixed(2)}</span>
-      </label>
+      {#if $currentGeneratorDefinition}
+        <p class="generator-summary">{$currentGeneratorDefinition.summary}</p>
+        {#if $currentGeneratorDefinition.inspiration}
+          <p class="generator-inspiration">{$currentGeneratorDefinition.inspiration}</p>
+        {/if}
+      {/if}
     </section>
 
     <section>
-      <h2>Erosion</h2>
-      <label>
-        Iterations
-        <input
-          type="range"
-          min="0"
-          max="8"
-          step="1"
-          bind:value={$generatorParameters.erosionIterations}
-          on:change={(event) =>
-            updateParam('erosionIterations', parseInt(event.currentTarget.value, 10))}
-        />
-        <span>{$generatorParameters.erosionIterations}</span>
-      </label>
+      <h2>Variants</h2>
+      {#if $currentGeneratorDefinition}
+        <div class="variant-grid">
+          {#each $currentGeneratorDefinition.variants as variant (variant.id)}
+            <button
+              type="button"
+              class:active={variant.id === $generatorParameters.variantId}
+              on:click={() => setGeneratorVariant(variant.id)}
+              disabled={$isGenerating}
+            >
+              <span class="variant-name">{variant.name}</span>
+              <span class="variant-description">{variant.description}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
+      {#if $currentVariantDefinition}
+        <p class="variant-highlight"><strong>Active:</strong> {$currentVariantDefinition.name}</p>
+      {/if}
     </section>
+
+    {#if optionGroups.length > 0}
+      {#each optionGroups as group (group.section)}
+        <section>
+          <h3>{group.section}</h3>
+          {#each group.options as option (option.id)}
+            <label class="range-field">
+              <div class="range-label">
+                <span>{option.label}</span>
+                <span class="range-value">
+                  {formatOptionValue(option, $generatorParameters.values[option.id] ?? option.min)}
+                </span>
+              </div>
+              <input
+                type="range"
+                min={option.min}
+                max={option.max}
+                step={option.step}
+                value={$generatorParameters.values[option.id] ?? option.min}
+                on:input={(event) =>
+                  updateGeneratorValue(option.id, parseFloat(event.currentTarget.value))}
+                disabled={$isGenerating}
+              />
+              {#if option.help}
+                <p class="range-help">{option.help}</p>
+              {/if}
+            </label>
+          {/each}
+        </section>
+      {/each}
+    {/if}
 
     <section>
       <h2>Summary</h2>
@@ -749,6 +798,23 @@
     font-size: 0.9rem;
   }
 
+  .stacked span:first-child {
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 0.75rem;
+    letter-spacing: 0.08em;
+    color: rgba(148, 163, 184, 0.85);
+  }
+
+  select {
+    padding: 0.5rem;
+    border-radius: 0.4rem;
+    border: 1px solid rgba(148, 163, 184, 0.4);
+    background: rgba(15, 23, 42, 0.6);
+    color: inherit;
+    font-size: 0.95rem;
+  }
+
   input[type='number'] {
     padding: 0.5rem;
     border-radius: 0.4rem;
@@ -776,6 +842,95 @@
   button:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+
+  .generator-summary {
+    margin: 0.75rem 0 0;
+    font-size: 0.9rem;
+    color: rgba(226, 232, 240, 0.76);
+  }
+
+  .generator-inspiration {
+    margin: 0.4rem 0 0;
+    font-size: 0.75rem;
+    color: rgba(148, 163, 184, 0.8);
+    font-style: italic;
+  }
+
+  .variant-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 0.65rem;
+    margin-top: 0.75rem;
+  }
+
+  .variant-grid button {
+    background: rgba(15, 23, 42, 0.7);
+    color: #e2e8f0;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    text-align: left;
+    padding: 0.75rem 0.85rem;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+
+  .variant-grid button.active {
+    border-color: rgba(56, 189, 248, 0.6);
+    background: rgba(14, 116, 144, 0.25);
+  }
+
+  .variant-grid button:disabled:not(.active) {
+    opacity: 0.7;
+  }
+
+  .variant-name {
+    display: block;
+    font-weight: 600;
+    font-size: 0.95rem;
+    margin-bottom: 0.25rem;
+  }
+
+  .variant-description {
+    display: block;
+    font-size: 0.8rem;
+    color: rgba(203, 213, 225, 0.85);
+  }
+
+  .variant-highlight {
+    margin-top: 0.75rem;
+    font-size: 0.85rem;
+    color: rgba(148, 197, 253, 0.9);
+  }
+
+  .range-field {
+    padding: 0.75rem;
+    border-radius: 0.6rem;
+    background: rgba(15, 23, 42, 0.55);
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    margin-bottom: 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+
+  .range-label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: rgba(226, 232, 240, 0.88);
+  }
+
+  .range-value {
+    font-variant-numeric: tabular-nums;
+    font-size: 0.8rem;
+    color: rgba(148, 197, 253, 0.9);
+  }
+
+  .range-help {
+    margin: 0;
+    font-size: 0.75rem;
+    color: rgba(148, 163, 184, 0.75);
   }
 
   .buttons {
