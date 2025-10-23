@@ -169,7 +169,7 @@ export class MapRenderer {
       data[baseIndex + 3] = 255;
     }
 
-    return Texture.fromBuffer(data, width, height);
+    return this.#textureFromRgba(data, width, height);
   }
 
   #buildBiomeTexture(result: GeneratorResult): Texture {
@@ -185,7 +185,7 @@ export class MapRenderer {
       data[baseIndex + 3] = 200;
     }
 
-    return Texture.fromBuffer(data, width, height);
+    return this.#textureFromRgba(data, width, height);
   }
 
   #buildWaterTexture(result: GeneratorResult): Texture {
@@ -201,6 +201,11 @@ export class MapRenderer {
       data[baseIndex + 3] = Math.floor(120 + intensity * 135);
     }
 
-    return Texture.fromBuffer(data, width, height);
+    return this.#textureFromRgba(data, width, height);
+  }
+
+  #textureFromRgba(data: Uint8ClampedArray, width: number, height: number): Texture {
+    const imageData = new ImageData(data, width, height);
+    return Texture.from(imageData);
   }
 }

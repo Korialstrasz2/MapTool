@@ -1,5 +1,9 @@
 import { writable, derived } from 'svelte/store';
-import type { GeneratorParameters, GeneratorResult } from '$lib/types/generation';
+import type {
+  GeneratorParameters,
+  GeneratorResult,
+  WorkerStatusStage
+} from '$lib/types/generation';
 
 const DEFAULT_PARAMS: GeneratorParameters = {
   width: 512,
@@ -17,6 +21,73 @@ export const generatorResult = writable<GeneratorResult | null>(null);
 export const isGenerating = writable(false);
 export const lastDuration = writable<number | null>(null);
 export const generationStatus = writable<string>('');
+
+export type GenerationTimelineStage =
+  | 'requesting'
+  | 'renderer-ready'
+  | WorkerStatusStage
+  | 'rendering'
+  | 'ready'
+  | 'error';
+
+export interface GenerationTimelineEntry {
+  id: number;
+  stage: GenerationTimelineStage;
+  message: string;
+  timestamp: number;
+  elapsedMs: number;
+  sinceStartMs: number;
+  details?: Record<string, unknown>;
+}
+
+export const generationTimeline = writable<GenerationTimelineEntry[]>([]);
+
+let timelineCounter = 0;
+let firstTimestamp: number | null = null;
+let lastTimestamp: number | null = null;
+
+function nowMs(): number {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    return performance.now();
+  }
+  return Date.now();
+}
+
+export function resetGenerationTimeline(): void {
+  generationTimeline.set([]);
+  timelineCounter = 0;
+  firstTimestamp = null;
+  lastTimestamp = null;
+}
+
+export function appendGenerationTimeline(
+  stage: GenerationTimelineStage,
+  message: string,
+  details?: Record<string, unknown>
+): void {
+  const timestamp = nowMs();
+
+  if (firstTimestamp === null) {
+    firstTimestamp = timestamp;
+  }
+
+  const elapsedMs = lastTimestamp === null ? 0 : Math.max(0, timestamp - lastTimestamp);
+  const sinceStartMs = firstTimestamp === null ? 0 : Math.max(0, timestamp - firstTimestamp);
+
+  const entry: GenerationTimelineEntry = {
+    id: ++timelineCounter,
+    stage,
+    message,
+    timestamp,
+    elapsedMs,
+    sinceStartMs,
+    details
+  };
+
+  lastTimestamp = timestamp;
+
+  generationTimeline.update((entries) => [...entries, entry]);
+}
 
 export const summary = derived(generatorResult, ($result) => {
   if (!$result) {
