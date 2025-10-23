@@ -2,6 +2,7 @@
   import { onDestroy, onMount } from 'svelte';
   import { get } from 'svelte/store';
   import {
+    generatorDefinitions,
     generatorParameters,
     generatorResult,
     isGenerating,
@@ -11,14 +12,18 @@
     generationStatus,
     generationTimeline,
     resetGenerationTimeline,
-    appendGenerationTimeline
+    appendGenerationTimeline,
+    selectGenerator,
+    updateGeneratorSetting,
+    activeGeneratorDefinition,
+    formatSettingValue
   } from '$stores/generatorStore';
   import type {
     GenerationTimelineEntry,
     GenerationTimelineStage
   } from '$stores/generatorStore';
   import type { WorkerMessage } from '$lib/types/generation';
-  import type { GeneratorParameters } from '$lib/types/generation';
+  import type { GeneratorParameterControl } from '$lib/types/generation';
   import { MapRenderer } from '$lib/render/MapRenderer';
 
   let canvasContainer: HTMLDivElement | null = null;
@@ -29,6 +34,7 @@
   let rendererReady = false;
   let timelineEntries: GenerationTimelineEntry[] = [];
   let latestTimelineEntry: GenerationTimelineEntry | undefined;
+  let currentDefinition = $activeGeneratorDefinition;
 
   const canUseBrowser = typeof window !== 'undefined';
 
@@ -48,6 +54,7 @@
     seed: 'Seed',
     width: 'Width',
     height: 'Height',
+    generator: 'Generator',
     generatorDurationMs: 'Generator time'
   };
 
@@ -115,6 +122,7 @@
 
   $: timelineEntries = $generationTimeline;
   $: latestTimelineEntry = timelineEntries.at(-1);
+  $: currentDefinition = $activeGeneratorDefinition;
 
   onMount(() => {
     if (!canUseBrowser || !canvasContainer) {
@@ -258,6 +266,7 @@
       console.warn('[MapTool] Trigger requested before renderer finished initialization.');
     }
     const params = get(generatorParameters);
+    const definition = get(activeGeneratorDefinition);
     resetGenerationTimeline();
     if (rendererReady && canvasContainer) {
       appendGenerationTimeline('renderer-ready', 'Renderer ready.', {
@@ -268,7 +277,8 @@
     appendGenerationTimeline('requesting', 'Dispatching parameters to worker…', {
       seed: params.seed,
       width: params.width,
-      height: params.height
+      height: params.height,
+      generator: definition.name
     });
     isGenerating.set(true);
     generationStatus.set('Preparing generation…');
@@ -280,12 +290,14 @@
     worker.postMessage({ type: 'generate', params });
   }
 
-  function updateParam(key: keyof GeneratorParameters, value: number) {
-    generatorParameters.update((params) => ({
-      ...params,
-      [key]: value
-    }));
-    console.info('[MapTool] Updated generator parameter', { key, value });
+  function handleSettingInput(control: GeneratorParameterControl, rawValue: string) {
+    const parsed = parseFloat(rawValue);
+    if (!Number.isFinite(parsed)) {
+      return;
+    }
+    const value = control.integer ? Math.round(parsed) : parsed;
+    updateGeneratorSetting(control.key, value);
+    console.info('[MapTool] Updated generator setting', { key: control.key, value });
   }
 </script>
 
@@ -354,6 +366,26 @@
       <p>Deterministic seeds, reproducible results. Offline-ready.</p>
     </header>
 
+    <section class="generator-section">
+      <h2>Generator</h2>
+      <div class="generator-grid">
+        {#each generatorDefinitions as definition (definition.id)}
+          <button
+            type="button"
+            class="generator-card"
+            class:active={definition.id === $generatorParameters.generatorId}
+            aria-pressed={definition.id === $generatorParameters.generatorId}
+            on:click={() => selectGenerator(definition.id)}
+            disabled={$isGenerating && definition.id !== $generatorParameters.generatorId}
+          >
+            <span class="generator-card__name">{definition.name}</span>
+            <span class="generator-card__tagline">{definition.tagline}</span>
+          </button>
+        {/each}
+      </div>
+      <p class="generator-description">{currentDefinition.description}</p>
+    </section>
+
     <section>
       <label>
         Seed
@@ -377,75 +409,29 @@
       {/if}
     </section>
 
-    <section>
-      <h2>Terrain</h2>
-      <label>
-        Sea level
-        <input
-          type="range"
-          min="0.2"
-          max="0.7"
-          step="0.01"
-          bind:value={$generatorParameters.seaLevel}
-          on:change={(event) => updateParam('seaLevel', parseFloat(event.currentTarget.value))}
-        />
-        <span>{$generatorParameters.seaLevel.toFixed(2)}</span>
-      </label>
-      <label>
-        Elevation amplitude
-        <input
-          type="range"
-          min="0.4"
-          max="1.5"
-          step="0.05"
-          bind:value={$generatorParameters.elevationAmplitude}
-          on:change={(event) =>
-            updateParam('elevationAmplitude', parseFloat(event.currentTarget.value))}
-        />
-        <span>{$generatorParameters.elevationAmplitude.toFixed(2)}</span>
-      </label>
-      <label>
-        Warp strength
-        <input
-          type="range"
-          min="0"
-          max="200"
-          step="5"
-          bind:value={$generatorParameters.warpStrength}
-          on:change={(event) => updateParam('warpStrength', parseFloat(event.currentTarget.value))}
-        />
-        <span>{$generatorParameters.warpStrength.toFixed(0)}</span>
-      </label>
-      <label>
-        Moisture scale
-        <input
-          type="range"
-          min="0.2"
-          max="2"
-          step="0.05"
-          bind:value={$generatorParameters.moistureScale}
-          on:change={(event) => updateParam('moistureScale', parseFloat(event.currentTarget.value))}
-        />
-        <span>{$generatorParameters.moistureScale.toFixed(2)}</span>
-      </label>
-    </section>
-
-    <section>
-      <h2>Erosion</h2>
-      <label>
-        Iterations
-        <input
-          type="range"
-          min="0"
-          max="8"
-          step="1"
-          bind:value={$generatorParameters.erosionIterations}
-          on:change={(event) =>
-            updateParam('erosionIterations', parseInt(event.currentTarget.value, 10))}
-        />
-        <span>{$generatorParameters.erosionIterations}</span>
-      </label>
-    </section>
+    {#each currentDefinition.sections as section (section.id)}
+      <section>
+        <h2>{section.label}</h2>
+        {#if section.description}
+          <p class="section-description">{section.description}</p>
+        {/if}
+        {#each section.parameters as control (control.key)}
+          <label>
+            {control.label}
+            <input
+              type="range"
+              min={control.min}
+              max={control.max}
+              step={control.step}
+              value={$generatorParameters.settings[control.key] ?? control.defaultValue}
+              on:input={(event) => handleSettingInput(control, event.currentTarget.value)}
+              disabled={$isGenerating}
+            />
+            <span>{formatSettingValue(control, $generatorParameters.settings[control.key])}</span>
+          </label>
+        {/each}
+      </section>
+    {/each}
 
     <section>
       <h2>Summary</h2>
@@ -761,7 +747,7 @@
     width: 100%;
   }
 
-  button {
+  .buttons button {
     appearance: none;
     border: none;
     border-radius: 0.5rem;
@@ -773,7 +759,7 @@
     transition: opacity 0.15s ease;
   }
 
-  button:disabled {
+  .buttons button:disabled {
     opacity: 0.5;
     cursor: default;
   }
@@ -782,6 +768,70 @@
     display: flex;
     gap: 0.75rem;
     margin-top: 0.75rem;
+  }
+
+  .generator-section {
+    margin-bottom: 1.75rem;
+  }
+
+  .generator-grid {
+    display: grid;
+    gap: 0.75rem;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  }
+
+  .generator-card {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.4rem;
+    padding: 0.85rem;
+    border-radius: 0.75rem;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    background: rgba(15, 23, 42, 0.65);
+    color: inherit;
+    cursor: pointer;
+    transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.2s ease;
+  }
+
+  .generator-card:hover:not(:disabled),
+  .generator-card:focus-visible {
+    border-color: rgba(56, 189, 248, 0.6);
+    transform: translateY(-1px);
+    box-shadow: 0 10px 18px rgba(8, 15, 35, 0.22);
+  }
+
+  .generator-card.active {
+    border-color: rgba(56, 189, 248, 0.95);
+    background: rgba(30, 64, 175, 0.28);
+    box-shadow: 0 14px 24px rgba(8, 15, 35, 0.3);
+  }
+
+  .generator-card:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+
+  .generator-card__name {
+    font-weight: 600;
+    font-size: 1rem;
+  }
+
+  .generator-card__tagline {
+    font-size: 0.85rem;
+    color: rgba(226, 232, 240, 0.75);
+  }
+
+  .generator-description {
+    margin-top: 0.8rem;
+    font-size: 0.9rem;
+    color: rgba(226, 232, 240, 0.78);
+  }
+
+  .section-description {
+    margin: 0 0 0.5rem;
+    font-size: 0.85rem;
+    color: rgba(226, 232, 240, 0.7);
   }
 
   .meta {
