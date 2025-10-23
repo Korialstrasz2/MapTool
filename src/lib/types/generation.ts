@@ -18,15 +18,44 @@ export type BiomeId =
   | 'desert'
   | 'alpine';
 
+export type GeneratorEngineId =
+  | 'terrain-wasm'
+  | 'fractal-highlands'
+  | 'voronoi-realms'
+  | 'noisy-archipelago';
+
+export interface GeneratorOptionDefinition {
+  id: string;
+  label: string;
+  description?: string;
+  min: number;
+  max: number;
+  step: number;
+  format?: (value: number) => string;
+}
+
+export interface GeneratorVariantDefinition {
+  id: string;
+  name: string;
+  description: string;
+  optionDefaults: Record<string, number>;
+}
+
+export interface GeneratorEngineDefinition {
+  id: GeneratorEngineId;
+  name: string;
+  description: string;
+  variants: GeneratorVariantDefinition[];
+  options: GeneratorOptionDefinition[];
+}
+
 export interface GeneratorParameters {
   width: number;
   height: number;
   seed: number;
-  seaLevel: number;
-  elevationAmplitude: number;
-  warpStrength: number;
-  erosionIterations: number;
-  moistureScale: number;
+  generatorId: GeneratorEngineId;
+  variantId: string;
+  options: Record<string, number>;
 }
 
 export interface GeneratorResult {
