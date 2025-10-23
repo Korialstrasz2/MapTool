@@ -1,4 +1,4 @@
-import { Application, Container, Sprite, Texture } from 'pixi.js';
+import { Application, BufferImageSource, Container, Sprite, Texture } from 'pixi.js';
 import type { GeneratorResult } from '$lib/types/generation';
 import { hypsometricColor, biomeColor } from '$lib/utils/color';
 import { decodeBiome } from '$lib/utils/biomes';
@@ -205,11 +205,16 @@ export class MapRenderer {
   }
 
   #textureFromRgba(data: Uint8ClampedArray, width: number, height: number): Texture {
-    // PIXI v8 no longer accepts ImageData instances when constructing textures.
-    // Using `Texture.fromBuffer` avoids relying on browser-specific globals and
-    // works consistently in web workers and during SSR.
     const buffer =
       data instanceof Uint8Array ? data : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-    return Texture.fromBuffer(buffer, width, height);
+
+    const source = new BufferImageSource({
+      width,
+      height,
+      data: buffer,
+      format: 'rgba8unorm'
+    });
+
+    return Texture.from(source);
   }
 }
