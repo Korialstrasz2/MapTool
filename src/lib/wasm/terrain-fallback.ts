@@ -1,19 +1,49 @@
 import seedrandom from 'seedrandom';
+import type { GeneratorParameters } from '$lib/types/generation';
 import type { TerrainGeneration, TerrainWasmModule } from './terrain';
-import { clamp, pickBiome } from '$lib/workers/generator-utils';
 
-interface LegacyGeneratorParameters {
-  width: number;
-  height: number;
-  seed: number;
-  seaLevel: number;
-  elevationAmplitude: number;
-  warpStrength: number;
-  erosionIterations: number;
-  moistureScale: number;
+const BIOME_MAP: Array<{ elevation: number; moisture: number; temperature: number; index: number }> = [
+  { elevation: 0.2, moisture: 0.5, temperature: 1, index: 0 },
+  { elevation: 0.25, moisture: 1, temperature: 1, index: 1 },
+  { elevation: 0.4, moisture: 0.4, temperature: 0.25, index: 2 },
+  { elevation: 0.6, moisture: 0.7, temperature: 0.35, index: 3 },
+  { elevation: 0.6, moisture: 0.85, temperature: 0.5, index: 4 },
+  { elevation: 0.65, moisture: 0.6, temperature: 0.7, index: 5 },
+  { elevation: 0.7, moisture: 0.95, temperature: 0.85, index: 6 },
+  { elevation: 0.75, moisture: 0.6, temperature: 0.9, index: 7 },
+  { elevation: 0.75, moisture: 0.3, temperature: 1, index: 8 },
+  { elevation: 0.95, moisture: 0.5, temperature: 0.4, index: 9 }
+];
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
-function createGenerator(seed: number, params: LegacyGeneratorParameters) {
+function pickBiome(elevation: number, moisture: number, temperature: number): number {
+  if (elevation < 0.18) {
+    return 0;
+  }
+  if (elevation < 0.24) {
+    return 1;
+  }
+
+  let best = BIOME_MAP[0];
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (const candidate of BIOME_MAP) {
+    const dElevation = Math.abs(candidate.elevation - elevation);
+    const dMoisture = Math.abs(candidate.moisture - moisture);
+    const dTemperature = Math.abs(candidate.temperature - temperature);
+    const score = dElevation * 2 + dMoisture + dTemperature;
+    if (score < bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+
+  return best.index;
+}
+
+function createGenerator(seed: number, params: GeneratorParameters) {
   const rng = seedrandom(String(seed >>> 0));
   const { width, height, seaLevel, elevationAmplitude, warpStrength, erosionIterations, moistureScale } = params;
 
@@ -68,7 +98,7 @@ const fallbackModule: TerrainWasmModule = {
     const biome = new Uint8Array(size);
     const water = new Float32Array(size);
 
-    const params: LegacyGeneratorParameters = {
+    const params: GeneratorParameters = {
       width,
       height,
       seed,
