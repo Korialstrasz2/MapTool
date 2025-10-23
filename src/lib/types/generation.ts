@@ -18,17 +18,6 @@ export type BiomeId =
   | 'desert'
   | 'alpine';
 
-export interface GeneratorParameters {
-  width: number;
-  height: number;
-  seed: number;
-  seaLevel: number;
-  elevationAmplitude: number;
-  warpStrength: number;
-  erosionIterations: number;
-  moistureScale: number;
-}
-
 export interface GeneratorResult {
   width: number;
   height: number;
@@ -42,10 +31,11 @@ export interface GeneratorResult {
   settlements?: Array<{ id: number; x: number; y: number; size: number }>;
 }
 
-export interface WorkerRequest {
-  type: 'generate';
-  params: GeneratorParameters;
-}
+import type { GeneratorSelectionPayload } from './generatorCatalog';
+
+export type WorkerRequest =
+  | { type: 'generate'; payload: GeneratorSelectionPayload }
+  | { type: 'prime-family'; familyId: string };
 
 export interface WorkerResponse {
   type: 'result';

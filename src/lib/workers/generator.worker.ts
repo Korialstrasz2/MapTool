@@ -1,18 +1,16 @@
 /// <reference lib="webworker" />
 
 import type {
-  GeneratorParameters,
   WorkerRequest,
   WorkerResponse,
   WorkerError,
   WorkerStatus,
   WorkerStatusStage
 } from '$lib/types/generation';
-import type { TerrainWasmModule } from '$lib/wasm/terrain';
-import { loadTerrainWasm } from '$lib/wasm/terrain';
+import type { GeneratorRunner } from '$lib/types/generatorCatalog';
+import { FAMILY_MAP } from '$lib/generators';
 
-let modulePromise: Promise<TerrainWasmModule> | null = null;
-let moduleLoaded = false;
+const runnerCache = new Map<string, Promise<GeneratorRunner>>();
 
 function postStatus(stage: WorkerStatusStage, message: string) {
   const status: WorkerStatus = { type: 'status', stage, message };
@@ -24,81 +22,94 @@ const ctx: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobal
 ctx.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   const { data } = event;
 
+  if (data.type === 'prime-family') {
+    void warmFamily(data.familyId);
+    return;
+  }
+
   if (data.type !== 'generate') {
     return;
   }
 
+  const { payload } = data;
+  const family = FAMILY_MAP.get(payload.familyId);
+
+  if (!family) {
+    const message = `Unknown generator family: ${payload.familyId}`;
+    console.error('[MapTool][Worker] ' + message);
+    const response: WorkerError = { type: 'error', message };
+    ctx.postMessage(response);
+    return;
+  }
+
+  const variant = family.variants.find((entry) => entry.id === payload.variantId);
+
   try {
-    if (!modulePromise) {
-      console.info('[MapTool][Worker] Loading terrain WebAssembly module…');
-      postStatus('loading-module', 'Loading terrain engine…');
-      modulePromise = loadTerrainWasm();
-    }
+    const runner = await warmFamily(payload.familyId, family);
 
-    const module = await modulePromise;
-
-    if (!moduleLoaded) {
-      moduleLoaded = true;
-      postStatus('module-ready', 'Terrain engine ready.');
-    }
-
-    postStatus('generating', 'Running terrain simulation…');
+    postStatus('generating', `Generating with ${family.name}${variant ? ` – ${variant.name}` : ''}…`);
     console.info('[MapTool][Worker] Starting generation', {
-      seed: data.params.seed,
-      width: data.params.width,
-      height: data.params.height
+      family: family.id,
+      variant: payload.variantId,
+      seed: payload.seed,
+      width: payload.width,
+      height: payload.height
     });
+
     const start = performance.now();
-    const payload = runGenerator(module, data.params);
-    const durationMs = performance.now() - start;
-    postStatus('transferring', 'Finalizing map data…');
-    console.info('[MapTool][Worker] Generation completed', {
-      durationMs: Number(durationMs.toFixed(2))
+    const result = await runner.generate({
+      width: payload.width,
+      height: payload.height,
+      seed: payload.seed,
+      parameters: payload.parameters,
+      variantId: payload.variantId
     });
-    const response: WorkerResponse = { type: 'result', payload, durationMs };
-    ctx.postMessage(response, [
-      payload.heightmap.buffer,
-      payload.flow.buffer,
-      payload.moisture.buffer,
-      payload.temperature.buffer,
-      payload.biome.buffer,
-      payload.water.buffer
-    ]);
+    const durationMs = performance.now() - start;
+
+    postStatus('transferring', 'Packaging terrain layers…');
+
+    const response: WorkerResponse = {
+      type: 'result',
+      payload: result,
+      durationMs
+    };
+
+    const transferables: Array<ArrayBuffer> = [
+      result.heightmap.buffer,
+      result.flow.buffer,
+      result.moisture.buffer,
+      result.temperature.buffer,
+      result.biome.buffer,
+      result.water.buffer
+    ];
+
+    ctx.postMessage(response, transferables);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown worker error';
-    console.error('[MapTool][Worker] Generation failed', message);
+    console.error('[MapTool][Worker] Generation failed', error);
     const response: WorkerError = { type: 'error', message };
     ctx.postMessage(response);
   }
 };
 
-function runGenerator(module: TerrainWasmModule, params: GeneratorParameters) {
-  const { width, height, seed, seaLevel, elevationAmplitude, warpStrength, erosionIterations, moistureScale } = params;
-  const result = module.generate_map(
-    width,
-    height,
-    seed >>> 0,
-    seaLevel,
-    elevationAmplitude,
-    warpStrength,
-    erosionIterations,
-    moistureScale
-  );
+async function warmFamily(id: string, family = FAMILY_MAP.get(id)) {
+  if (!family) {
+    return Promise.reject(new Error(`Unknown generator family: ${id}`));
+  }
 
-  return {
-    width: result.width,
-    height: result.height,
-    heightmap: result.heightmap.slice(),
-    flow: result.flow.slice(),
-    moisture: result.moisture.slice(),
-    temperature: result.temperature.slice(),
-    biome: result.biome.slice(),
-    water: result.water.slice(),
-    roadGraph: result.roadGraph ? result.roadGraph.map((entry) => [...entry] as [number, number]) : undefined,
-    settlements: result.settlements
-      ? result.settlements.map((settlement) => ({ ...settlement }))
-      : undefined
-  };
+  let promise = runnerCache.get(id);
+
+  if (!promise) {
+    console.info('[MapTool][Worker] Preparing generator family', { id });
+    postStatus('loading-module', `Preparing ${family.name}…`);
+    promise = family.createRunner().then((runner) => {
+      postStatus('module-ready', `${family.name} ready.`);
+      return runner;
+    });
+    runnerCache.set(id, promise);
+  }
+
+  return promise;
 }
 
 export {};
