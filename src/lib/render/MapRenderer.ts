@@ -210,7 +210,19 @@ export class MapRenderer {
         ? data
         : new Uint8ClampedArray(data.buffer, data.byteOffset, data.byteLength);
 
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+
+    const context = canvas.getContext('2d');
+
+    if (!context) {
+      throw new Error('Unable to obtain a 2D canvas context for texture creation.');
+    }
+
     const imageData = new ImageData(clamped, width, height);
-    return Texture.from(imageData);
+    context.putImageData(imageData, 0, 0);
+
+    return Texture.from(canvas);
   }
 }
