@@ -11,19 +11,14 @@
     generationStatus,
     generationTimeline,
     resetGenerationTimeline,
-    appendGenerationTimeline,
-    availableGenerators,
-    selectedGenerator,
-    selectedVariant,
-    setGenerator,
-    setVariant,
-    updateOption
+    appendGenerationTimeline
   } from '$stores/generatorStore';
   import type {
     GenerationTimelineEntry,
     GenerationTimelineStage
   } from '$stores/generatorStore';
   import type { WorkerMessage } from '$lib/types/generation';
+  import type { GeneratorParameters } from '$lib/types/generation';
   import { MapRenderer } from '$lib/render/MapRenderer';
 
   let canvasContainer: HTMLDivElement | null = null;
@@ -116,27 +111,6 @@
 
   function stageClass(stage: GenerationTimelineStage): string {
     return `stage-${stage}`;
-  }
-
-  function formatOptionValue(optionId: string, value: number | undefined): string {
-    const engine = get(selectedGenerator);
-    if (!engine) {
-      return value === undefined ? '' : value.toFixed(2);
-    }
-    const option = engine.options.find((candidate) => candidate.id === optionId);
-    if (!option || value === undefined || Number.isNaN(value)) {
-      return '';
-    }
-    if (typeof option.format === 'function') {
-      return option.format(value);
-    }
-    if (option.step >= 1) {
-      return value.toFixed(0);
-    }
-    if (option.step >= 0.1) {
-      return value.toFixed(1);
-    }
-    return value.toFixed(2);
   }
 
   $: timelineEntries = $generationTimeline;
@@ -284,8 +258,6 @@
       console.warn('[MapTool] Trigger requested before renderer finished initialization.');
     }
     const params = get(generatorParameters);
-    const engine = get(selectedGenerator);
-    const variant = get(selectedVariant);
     resetGenerationTimeline();
     if (rendererReady && canvasContainer) {
       appendGenerationTimeline('renderer-ready', 'Renderer ready.', {
@@ -296,20 +268,24 @@
     appendGenerationTimeline('requesting', 'Dispatching parameters to worker…', {
       seed: params.seed,
       width: params.width,
-      height: params.height,
-      generator: engine?.name ?? params.generatorId,
-      variant: variant?.name ?? params.variantId
+      height: params.height
     });
     isGenerating.set(true);
     generationStatus.set('Preparing generation…');
     console.info('[MapTool] Triggering generation', {
       seed: params.seed,
       width: params.width,
-      height: params.height,
-      generatorId: params.generatorId,
-      variantId: params.variantId
+      height: params.height
     });
     worker.postMessage({ type: 'generate', params });
+  }
+
+  function updateParam(key: keyof GeneratorParameters, value: number) {
+    generatorParameters.update((params) => ({
+      ...params,
+      [key]: value
+    }));
+    console.info('[MapTool] Updated generator parameter', { key, value });
   }
 </script>
 
@@ -402,66 +378,74 @@
     </section>
 
     <section>
-      <h2>Generator</h2>
+      <h2>Terrain</h2>
       <label>
-        Engine
-        <select
-          value={$generatorParameters.generatorId}
-          on:change={(event) => setGenerator(event.currentTarget.value)}
-          disabled={$isGenerating}
-        >
-          {#each availableGenerators as engine}
-            <option value={engine.id}>{engine.name}</option>
-          {/each}
-        </select>
+        Sea level
+        <input
+          type="range"
+          min="0.2"
+          max="0.7"
+          step="0.01"
+          bind:value={$generatorParameters.seaLevel}
+          on:change={(event) => updateParam('seaLevel', parseFloat(event.currentTarget.value))}
+        />
+        <span>{$generatorParameters.seaLevel.toFixed(2)}</span>
       </label>
-      {#if $selectedGenerator}
-        <p class="meta">{$selectedGenerator.description}</p>
-        <label>
-          Variant
-          <select
-            value={$generatorParameters.variantId}
-            on:change={(event) => setVariant(event.currentTarget.value)}
-            disabled={$isGenerating}
-          >
-            {#each $selectedGenerator.variants as variant}
-              <option value={variant.id}>{variant.name}</option>
-            {/each}
-          </select>
-        </label>
-        {#if $selectedVariant}
-          <p class="meta variant-description">{$selectedVariant.description}</p>
-        {/if}
-      {/if}
+      <label>
+        Elevation amplitude
+        <input
+          type="range"
+          min="0.4"
+          max="1.5"
+          step="0.05"
+          bind:value={$generatorParameters.elevationAmplitude}
+          on:change={(event) =>
+            updateParam('elevationAmplitude', parseFloat(event.currentTarget.value))}
+        />
+        <span>{$generatorParameters.elevationAmplitude.toFixed(2)}</span>
+      </label>
+      <label>
+        Warp strength
+        <input
+          type="range"
+          min="0"
+          max="200"
+          step="5"
+          bind:value={$generatorParameters.warpStrength}
+          on:change={(event) => updateParam('warpStrength', parseFloat(event.currentTarget.value))}
+        />
+        <span>{$generatorParameters.warpStrength.toFixed(0)}</span>
+      </label>
+      <label>
+        Moisture scale
+        <input
+          type="range"
+          min="0.2"
+          max="2"
+          step="0.05"
+          bind:value={$generatorParameters.moistureScale}
+          on:change={(event) => updateParam('moistureScale', parseFloat(event.currentTarget.value))}
+        />
+        <span>{$generatorParameters.moistureScale.toFixed(2)}</span>
+      </label>
     </section>
 
-    {#if $selectedGenerator}
-      <section>
-        <h2>Options</h2>
-        {#each $selectedGenerator.options as option}
-          <label class="option-control">
-            <div class="option-control__header">
-              <span>{option.label}</span>
-              <span class="option-control__value">
-                {formatOptionValue(option.id, $generatorParameters.options[option.id])}
-              </span>
-            </div>
-            {#if option.description}
-              <p class="meta">{option.description}</p>
-            {/if}
-            <input
-              type="range"
-              min={option.min}
-              max={option.max}
-              step={option.step}
-              value={$generatorParameters.options[option.id] ?? option.min}
-              on:input={(event) => updateOption(option.id, parseFloat(event.currentTarget.value))}
-              disabled={$isGenerating}
-            />
-          </label>
-        {/each}
-      </section>
-    {/if}
+    <section>
+      <h2>Erosion</h2>
+      <label>
+        Iterations
+        <input
+          type="range"
+          min="0"
+          max="8"
+          step="1"
+          bind:value={$generatorParameters.erosionIterations}
+          on:change={(event) =>
+            updateParam('erosionIterations', parseInt(event.currentTarget.value, 10))}
+        />
+        <span>{$generatorParameters.erosionIterations}</span>
+      </label>
+    </section>
 
     <section>
       <h2>Summary</h2>
@@ -773,39 +757,8 @@
     color: inherit;
   }
 
-  select {
-    padding: 0.5rem;
-    border-radius: 0.4rem;
-    border: 1px solid rgba(148, 163, 184, 0.4);
-    background: rgba(15, 23, 42, 0.6);
-    color: inherit;
-  }
-
   input[type='range'] {
     width: 100%;
-  }
-
-  .option-control {
-    background: rgba(15, 23, 42, 0.45);
-    border-radius: 0.6rem;
-    border: 1px solid rgba(148, 163, 184, 0.18);
-    padding: 0.75rem 0.85rem 0.9rem;
-    gap: 0.5rem;
-  }
-
-  .option-control__header {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    font-weight: 600;
-    font-size: 0.85rem;
-    letter-spacing: 0.02em;
-    color: rgba(226, 232, 240, 0.95);
-  }
-
-  .option-control__value {
-    font-variant-numeric: tabular-nums;
-    color: rgba(148, 163, 184, 0.9);
   }
 
   button {
@@ -834,10 +787,6 @@
   .meta {
     color: rgba(226, 232, 240, 0.6);
     margin-top: 0.5rem;
-  }
-
-  .variant-description {
-    margin-top: 0.35rem;
   }
 
   ul {

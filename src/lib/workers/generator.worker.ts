@@ -1,7 +1,6 @@
 /// <reference lib="webworker" />
 
 import type {
-  GeneratorEngineId,
   GeneratorParameters,
   WorkerRequest,
   WorkerResponse,
@@ -9,9 +8,11 @@ import type {
   WorkerStatus,
   WorkerStatusStage
 } from '$lib/types/generation';
+import type { TerrainWasmModule } from '$lib/wasm/terrain';
 import { loadTerrainWasm } from '$lib/wasm/terrain';
-import { runGenerator } from '$lib/generators/runtime';
-import { getEngineDefinition, getVariantDefinition } from '$lib/generators/catalog';
+
+let modulePromise: Promise<TerrainWasmModule> | null = null;
+let moduleLoaded = false;
 
 function postStatus(stage: WorkerStatusStage, message: string) {
   const status: WorkerStatus = { type: 'status', stage, message };
@@ -19,26 +20,6 @@ function postStatus(stage: WorkerStatusStage, message: string) {
 }
 
 const ctx: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobalScope;
-
-const moduleReady = new Map<GeneratorEngineId, boolean>();
-
-function describeRun(params: GeneratorParameters): string {
-  const engine = getEngineDefinition(params.generatorId);
-  const variant = getVariantDefinition(engine, params.variantId);
-  if (engine && variant) {
-    return `${engine.name} · ${variant.name}`;
-  }
-  return engine?.name ?? params.generatorId;
-}
-
-async function ensureResources(params: GeneratorParameters): Promise<void> {
-  if (params.generatorId === 'terrain-wasm' && !moduleReady.get(params.generatorId)) {
-    postStatus('loading-module', 'Loading terrain engine…');
-    await loadTerrainWasm();
-    moduleReady.set(params.generatorId, true);
-    postStatus('module-ready', 'Terrain engine ready.');
-  }
-}
 
 ctx.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   const { data } = event;
@@ -48,29 +29,32 @@ ctx.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   }
 
   try {
-    const { params } = data;
-    await ensureResources(params);
+    if (!modulePromise) {
+      console.info('[MapTool][Worker] Loading terrain WebAssembly module…');
+      postStatus('loading-module', 'Loading terrain engine…');
+      modulePromise = loadTerrainWasm();
+    }
 
-    const description = describeRun(params);
-    postStatus('generating', `Running ${description}…`);
+    const module = await modulePromise;
+
+    if (!moduleLoaded) {
+      moduleLoaded = true;
+      postStatus('module-ready', 'Terrain engine ready.');
+    }
+
+    postStatus('generating', 'Running terrain simulation…');
     console.info('[MapTool][Worker] Starting generation', {
-      seed: params.seed,
-      width: params.width,
-      height: params.height,
-      generatorId: params.generatorId,
-      variantId: params.variantId
+      seed: data.params.seed,
+      width: data.params.width,
+      height: data.params.height
     });
-
     const start = performance.now();
-    const payload = await runGenerator(params);
+    const payload = runGenerator(module, data.params);
     const durationMs = performance.now() - start;
     postStatus('transferring', 'Finalizing map data…');
     console.info('[MapTool][Worker] Generation completed', {
-      durationMs: Number(durationMs.toFixed(2)),
-      generatorId: params.generatorId,
-      variantId: params.variantId
+      durationMs: Number(durationMs.toFixed(2))
     });
-
     const response: WorkerResponse = { type: 'result', payload, durationMs };
     ctx.postMessage(response, [
       payload.heightmap.buffer,
@@ -87,5 +71,34 @@ ctx.onmessage = async (event: MessageEvent<WorkerRequest>) => {
     ctx.postMessage(response);
   }
 };
+
+function runGenerator(module: TerrainWasmModule, params: GeneratorParameters) {
+  const { width, height, seed, seaLevel, elevationAmplitude, warpStrength, erosionIterations, moistureScale } = params;
+  const result = module.generate_map(
+    width,
+    height,
+    seed >>> 0,
+    seaLevel,
+    elevationAmplitude,
+    warpStrength,
+    erosionIterations,
+    moistureScale
+  );
+
+  return {
+    width: result.width,
+    height: result.height,
+    heightmap: result.heightmap.slice(),
+    flow: result.flow.slice(),
+    moisture: result.moisture.slice(),
+    temperature: result.temperature.slice(),
+    biome: result.biome.slice(),
+    water: result.water.slice(),
+    roadGraph: result.roadGraph ? result.roadGraph.map((entry) => [...entry] as [number, number]) : undefined,
+    settlements: result.settlements
+      ? result.settlements.map((settlement) => ({ ...settlement }))
+      : undefined
+  };
+}
 
 export {};
