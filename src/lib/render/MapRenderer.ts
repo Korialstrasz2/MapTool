@@ -1,4 +1,4 @@
-import { Application, BufferImageSource, Container, Sprite, Texture } from 'pixi.js';
+import { Application, Container, Sprite, Texture } from 'pixi.js';
 import type { GeneratorResult } from '$lib/types/generation';
 import { hypsometricColor, biomeColor } from '$lib/utils/color';
 import { decodeBiome } from '$lib/utils/biomes';
@@ -205,16 +205,12 @@ export class MapRenderer {
   }
 
   #textureFromRgba(data: Uint8ClampedArray, width: number, height: number): Texture {
-    const buffer =
-      data instanceof Uint8Array ? data : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    const clamped =
+      data instanceof Uint8ClampedArray
+        ? data
+        : new Uint8ClampedArray(data.buffer, data.byteOffset, data.byteLength);
 
-    const source = new BufferImageSource({
-      width,
-      height,
-      data: buffer,
-      format: 'rgba8unorm'
-    });
-
-    return Texture.from(source);
+    const imageData = new ImageData(clamped, width, height);
+    return Texture.from(imageData);
   }
 }
