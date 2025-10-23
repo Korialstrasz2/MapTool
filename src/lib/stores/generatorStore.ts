@@ -1,19 +1,31 @@
 import { writable, derived } from 'svelte/store';
 import type {
+  GeneratorDefinition,
   GeneratorParameters,
   GeneratorResult,
+  GeneratorSettings,
   WorkerStatusStage
 } from '$lib/types/generation';
+import {
+  GENERATOR_DEFINITIONS,
+  createDefaultSettings,
+  formatSettingValue,
+  getGeneratorDefinition,
+  mergeWithDefaults
+} from '$lib/config/generators';
+
+const DEFAULT_DEFINITION = GENERATOR_DEFINITIONS[0];
+const DEFAULT_SETTINGS = createDefaultSettings(DEFAULT_DEFINITION);
+const settingsCache = new Map<GeneratorDefinition['id'], GeneratorSettings>([
+  [DEFAULT_DEFINITION.id, DEFAULT_SETTINGS]
+]);
 
 const DEFAULT_PARAMS: GeneratorParameters = {
   width: 512,
   height: 512,
   seed: 1337,
-  seaLevel: 0.48,
-  elevationAmplitude: 0.9,
-  warpStrength: 80,
-  erosionIterations: 2,
-  moistureScale: 1.0
+  generatorId: DEFAULT_DEFINITION.id,
+  settings: DEFAULT_SETTINGS
 };
 
 export const generatorParameters = writable<GeneratorParameters>(DEFAULT_PARAMS);
@@ -21,6 +33,10 @@ export const generatorResult = writable<GeneratorResult | null>(null);
 export const isGenerating = writable(false);
 export const lastDuration = writable<number | null>(null);
 export const generationStatus = writable<string>('');
+export const generatorDefinitions = GENERATOR_DEFINITIONS;
+export const activeGeneratorDefinition = derived(generatorParameters, ($params) =>
+  getGeneratorDefinition($params.generatorId)
+);
 
 export type GenerationTimelineStage =
   | 'requesting'
@@ -111,3 +127,38 @@ export function randomizeSeed(): void {
     seed: (Math.random() * 1_000_000) >>> 0
   }));
 }
+
+export function selectGenerator(id: GeneratorDefinition['id']): void {
+  generatorParameters.update((params) => {
+    if (params.generatorId === id) {
+      return params;
+    }
+
+    settingsCache.set(params.generatorId, params.settings);
+    const definition = getGeneratorDefinition(id);
+    const cached = settingsCache.get(id);
+    const settings = cached ? mergeWithDefaults(definition, cached) : createDefaultSettings(definition);
+    settingsCache.set(id, settings);
+    return {
+      ...params,
+      generatorId: id,
+      settings
+    };
+  });
+}
+
+export function updateGeneratorSetting(key: string, value: number): void {
+  generatorParameters.update((params) => {
+    const nextSettings = {
+      ...params.settings,
+      [key]: value
+    };
+    settingsCache.set(params.generatorId, nextSettings);
+    return {
+      ...params,
+      settings: nextSettings
+    };
+  });
+}
+
+export { formatSettingValue };

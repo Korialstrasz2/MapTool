@@ -18,15 +18,45 @@ export type BiomeId =
   | 'desert'
   | 'alpine';
 
+export type GeneratorId = 'continental' | 'archipelago' | 'ridge-basin' | 'weitou-delta';
+
+export type GeneratorSettings = Record<string, number>;
+
+export interface GeneratorParameterControl {
+  key: string;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  defaultValue: number;
+  description?: string;
+  precision?: number;
+  unit?: string;
+  integer?: boolean;
+}
+
+export interface GeneratorControlSection {
+  id: string;
+  label: string;
+  description?: string;
+  parameters: GeneratorParameterControl[];
+}
+
+export interface GeneratorDefinition {
+  id: GeneratorId;
+  name: string;
+  tagline: string;
+  description: string;
+  statusMessage: string;
+  sections: GeneratorControlSection[];
+}
+
 export interface GeneratorParameters {
   width: number;
   height: number;
   seed: number;
-  seaLevel: number;
-  elevationAmplitude: number;
-  warpStrength: number;
-  erosionIterations: number;
-  moistureScale: number;
+  generatorId: GeneratorId;
+  settings: GeneratorSettings;
 }
 
 export interface GeneratorResult {
