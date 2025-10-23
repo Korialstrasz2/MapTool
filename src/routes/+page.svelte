@@ -2,7 +2,10 @@
   import { onDestroy, onMount } from 'svelte';
   import { get } from 'svelte/store';
   import {
-    generatorParameters,
+    baseParameters,
+    generatorFamilies,
+    activeFamilyId,
+    activeVariantId,
     generatorResult,
     isGenerating,
     lastDuration,
@@ -11,17 +14,34 @@
     generationStatus,
     generationTimeline,
     resetGenerationTimeline,
-    appendGenerationTimeline
+    appendGenerationTimeline,
+    setActiveFamily,
+    setActiveVariant,
+    parameterDefinitions,
+    currentFamily,
+    currentVariant,
+    currentParameters,
+    updateGeneratorParameter,
+    updateBaseParameter,
+    generatorRequestPayload
   } from '$stores/generatorStore';
+  import {
+    brushSettings,
+    setBrushMode,
+    setBrushSize,
+    setBrushStrength,
+    setBrushTargetHeight,
+    applyBrushStroke
+  } from '$stores/brushStore';
   import type {
     GenerationTimelineEntry,
     GenerationTimelineStage
   } from '$stores/generatorStore';
   import type { WorkerMessage } from '$lib/types/generation';
-  import type { GeneratorParameters } from '$lib/types/generation';
   import { MapRenderer } from '$lib/render/MapRenderer';
 
   let canvasContainer: HTMLDivElement | null = null;
+  let brushLayer: HTMLDivElement | null = null;
   let worker: Worker | null = null;
   let renderer: MapRenderer | null = null;
   let unsubscribe: (() => void) | null = null;
@@ -29,13 +49,16 @@
   let rendererReady = false;
   let timelineEntries: GenerationTimelineEntry[] = [];
   let latestTimelineEntry: GenerationTimelineEntry | undefined;
+  let isBrushing = false;
+  let brushCursor = { x: 0, y: 0, diameter: 0, visible: false };
 
   const canUseBrowser = typeof window !== 'undefined';
+  const families = generatorFamilies;
 
   const STAGE_LABELS: Record<GenerationTimelineStage, string> = {
     requesting: 'Dispatching',
     'renderer-ready': 'Renderer ready',
-    'loading-module': 'Loading engine',
+    'loading-module': 'Preparing engine',
     'module-ready': 'Engine ready',
     generating: 'Generating terrain',
     transferring: 'Transferring data',
@@ -48,7 +71,9 @@
     seed: 'Seed',
     width: 'Width',
     height: 'Height',
-    generatorDurationMs: 'Generator time'
+    generatorDurationMs: 'Generator time',
+    familyId: 'Generator',
+    variantId: 'Variant'
   };
 
   function formatDuration(ms: number): string {
@@ -113,8 +138,105 @@
     return `stage-${stage}`;
   }
 
+  function displayParameterValue(def: { step?: number }, value: number | undefined): string {
+    if (value === undefined || Number.isNaN(value)) {
+      return '';
+    }
+    if (!def.step) {
+      return value.toFixed(2);
+    }
+    if (def.step >= 1) {
+      return value.toFixed(0);
+    }
+    if (def.step >= 0.1) {
+      return value.toFixed(1);
+    }
+    return value.toFixed(2);
+  }
+
+  function chooseFamily(id: string) {
+    setActiveFamily(id);
+    if (worker) {
+      worker.postMessage({ type: 'prime-family', familyId: id });
+    }
+  }
+
+  function chooseVariant(id: string) {
+    setActiveVariant(id);
+    if (worker) {
+      const familyId = get(currentFamily).id;
+      worker.postMessage({ type: 'prime-family', familyId });
+    }
+  }
+
+  function updateBrushPosition(event: PointerEvent) {
+    if (!brushLayer) {
+      return null;
+    }
+    const result = get(generatorResult);
+    if (!result) {
+      return null;
+    }
+    const rect = brushLayer.getBoundingClientRect();
+    const px = event.clientX - rect.left;
+    const py = event.clientY - rect.top;
+    const nx = px / rect.width;
+    const ny = py / rect.height;
+    const mapX = nx * result.width;
+    const mapY = ny * result.height;
+    const settings = get(brushSettings);
+    const diameter = (settings.size * 2 * rect.width) / result.width;
+    brushCursor = { x: px, y: py, diameter, visible: nx >= 0 && nx <= 1 && ny >= 0 && ny <= 1 };
+    return { mapX, mapY };
+  }
+
+  function beginBrush(event: PointerEvent) {
+    if (event.button !== 0) {
+      return;
+    }
+    const coords = updateBrushPosition(event);
+    if (!coords || !brushLayer) {
+      return;
+    }
+    isBrushing = true;
+    brushLayer.setPointerCapture(event.pointerId);
+    const updated = applyBrushStroke(coords.mapX, coords.mapY, 1, 1);
+    if (updated) {
+      renderer?.render(updated);
+    }
+    event.preventDefault();
+  }
+
+  function moveBrush(event: PointerEvent) {
+    const coords = updateBrushPosition(event);
+    if (!coords) {
+      return;
+    }
+    if (isBrushing) {
+      const updated = applyBrushStroke(coords.mapX, coords.mapY, 1, 1);
+      if (updated) {
+        renderer?.render(updated);
+      }
+      event.preventDefault();
+    }
+  }
+
+  function endBrush(event: PointerEvent) {
+    if (brushLayer && brushLayer.hasPointerCapture(event.pointerId)) {
+      brushLayer.releasePointerCapture(event.pointerId);
+    }
+    isBrushing = false;
+    brushCursor = { ...brushCursor, visible: false };
+  }
+
   $: timelineEntries = $generationTimeline;
   $: latestTimelineEntry = timelineEntries.at(-1);
+  $: selectedFamily = $currentFamily;
+  $: selectedVariant = $currentVariant;
+  $: parameters = $currentParameters;
+  $: parameterDefs = $parameterDefinitions;
+  $: brushState = $brushSettings;
+  $: showBrushOverlay = rendererReady && $activeFamilyId === 'brush-sculptor' && Boolean($generatorResult);
 
   onMount(() => {
     if (!canUseBrowser || !canvasContainer) {
@@ -129,6 +251,7 @@
     });
 
     console.info('[MapTool] Background worker started.');
+    worker.postMessage({ type: 'prime-family', familyId: get(activeFamilyId) });
 
     worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
       const message = event.data;
@@ -257,7 +380,7 @@
     if (!rendererReady) {
       console.warn('[MapTool] Trigger requested before renderer finished initialization.');
     }
-    const params = get(generatorParameters);
+    const payload = get(generatorRequestPayload);
     resetGenerationTimeline();
     if (rendererReady && canvasContainer) {
       appendGenerationTimeline('renderer-ready', 'Renderer ready.', {
@@ -266,26 +389,26 @@
       });
     }
     appendGenerationTimeline('requesting', 'Dispatching parameters to worker…', {
-      seed: params.seed,
-      width: params.width,
-      height: params.height
+      seed: payload.seed,
+      width: payload.width,
+      height: payload.height,
+      familyId: payload.familyId,
+      variantId: payload.variantId
     });
     isGenerating.set(true);
     generationStatus.set('Preparing generation…');
-    console.info('[MapTool] Triggering generation', {
-      seed: params.seed,
-      width: params.width,
-      height: params.height
-    });
-    worker.postMessage({ type: 'generate', params });
+    console.info('[MapTool] Triggering generation', payload);
+    worker.postMessage({ type: 'generate', payload });
   }
 
-  function updateParam(key: keyof GeneratorParameters, value: number) {
-    generatorParameters.update((params) => ({
-      ...params,
-      [key]: value
-    }));
-    console.info('[MapTool] Updated generator parameter', { key, value });
+  function onBaseParamChange(key: 'seed' | 'width' | 'height', value: number) {
+    updateBaseParameter(key, value);
+    console.info('[MapTool] Updated base parameter', { key, value });
+  }
+
+  function onParameterChange(id: string, value: number) {
+    updateGeneratorParameter(id, value);
+    console.info('[MapTool] Updated generator parameter', { id, value });
   }
 </script>
 
@@ -347,23 +470,78 @@
         </ol>
       {/if}
     </div>
+    {#if showBrushOverlay}
+      <div
+        class="brush-overlay"
+        bind:this={brushLayer}
+        on:pointerdown={beginBrush}
+        on:pointermove={moveBrush}
+        on:pointerup={endBrush}
+        on:pointerleave={endBrush}
+        on:pointercancel={endBrush}
+        on:contextmenu|preventDefault
+      >
+        {#if brushCursor.visible}
+          <div
+            class="brush-cursor"
+            style={`width: ${brushCursor.diameter}px; height: ${brushCursor.diameter}px; transform: translate(${brushCursor.x - brushCursor.diameter / 2}px, ${brushCursor.y - brushCursor.diameter / 2}px);`}
+          />
+        {/if}
+      </div>
+    {/if}
   </div>
   <aside class="control-panel">
     <header>
       <h1>Regional Map Generator</h1>
-      <p>Deterministic seeds, reproducible results. Offline-ready.</p>
+      <p>Switch between four distinct engines, each with curated variants.</p>
     </header>
 
-    <section>
+    <section class="base-controls">
       <label>
         Seed
         <input
           type="number"
-          bind:value={$generatorParameters.seed}
           min="0"
           max="4294967295"
+          value={$baseParameters.seed}
+          on:change={(event) =>
+            onBaseParamChange('seed', Math.max(0, Math.floor(Number(event.currentTarget.value) || 0)))}
         />
       </label>
+      <div class="dimension-grid">
+        <label>
+          Width
+          <input
+            type="number"
+            min="128"
+            max="2048"
+            step="64"
+            value={$baseParameters.width}
+            on:change={(event) => {
+              const raw = Number(event.currentTarget.value);
+              const clamped = Math.min(2048, Math.max(128, Number.isFinite(raw) ? raw : 512));
+              const snapped = Math.round(clamped / 64) * 64;
+              onBaseParamChange('width', snapped);
+            }}
+          />
+        </label>
+        <label>
+          Height
+          <input
+            type="number"
+            min="128"
+            max="2048"
+            step="64"
+            value={$baseParameters.height}
+            on:change={(event) => {
+              const raw = Number(event.currentTarget.value);
+              const clamped = Math.min(2048, Math.max(128, Number.isFinite(raw) ? raw : 512));
+              const snapped = Math.round(clamped / 64) * 64;
+              onBaseParamChange('height', snapped);
+            }}
+          />
+        </label>
+      </div>
       <div class="buttons">
         <button type="button" on:click={triggerGeneration} disabled={$isGenerating}>
           Generate
@@ -377,75 +555,137 @@
       {/if}
     </section>
 
-    <section>
-      <h2>Terrain</h2>
-      <label>
-        Sea level
-        <input
-          type="range"
-          min="0.2"
-          max="0.7"
-          step="0.01"
-          bind:value={$generatorParameters.seaLevel}
-          on:change={(event) => updateParam('seaLevel', parseFloat(event.currentTarget.value))}
-        />
-        <span>{$generatorParameters.seaLevel.toFixed(2)}</span>
-      </label>
-      <label>
-        Elevation amplitude
-        <input
-          type="range"
-          min="0.4"
-          max="1.5"
-          step="0.05"
-          bind:value={$generatorParameters.elevationAmplitude}
-          on:change={(event) =>
-            updateParam('elevationAmplitude', parseFloat(event.currentTarget.value))}
-        />
-        <span>{$generatorParameters.elevationAmplitude.toFixed(2)}</span>
-      </label>
-      <label>
-        Warp strength
-        <input
-          type="range"
-          min="0"
-          max="200"
-          step="5"
-          bind:value={$generatorParameters.warpStrength}
-          on:change={(event) => updateParam('warpStrength', parseFloat(event.currentTarget.value))}
-        />
-        <span>{$generatorParameters.warpStrength.toFixed(0)}</span>
-      </label>
-      <label>
-        Moisture scale
-        <input
-          type="range"
-          min="0.2"
-          max="2"
-          step="0.05"
-          bind:value={$generatorParameters.moistureScale}
-          on:change={(event) => updateParam('moistureScale', parseFloat(event.currentTarget.value))}
-        />
-        <span>{$generatorParameters.moistureScale.toFixed(2)}</span>
-      </label>
+    <section class="generator-family">
+      <h2>Generator family</h2>
+      <div class="family-grid">
+        {#each families as family (family.id)}
+          <button
+            type="button"
+            class:active={family.id === $activeFamilyId}
+            on:click={() => chooseFamily(family.id)}
+          >
+            <span class="family-name">{family.name}</span>
+            <span class="family-tags">
+              {#each family.tags as tag}
+                <span>{tag}</span>
+              {/each}
+            </span>
+          </button>
+        {/each}
+      </div>
+      <p class="family-description">{selectedFamily.description}</p>
     </section>
 
-    <section>
-      <h2>Erosion</h2>
-      <label>
-        Iterations
-        <input
-          type="range"
-          min="0"
-          max="8"
-          step="1"
-          bind:value={$generatorParameters.erosionIterations}
-          on:change={(event) =>
-            updateParam('erosionIterations', parseInt(event.currentTarget.value, 10))}
-        />
-        <span>{$generatorParameters.erosionIterations}</span>
-      </label>
+    <section class="variant-section">
+      <h2>Variant</h2>
+      <div class="variant-row">
+        {#each selectedFamily.variants as variant (variant.id)}
+          <button
+            type="button"
+            class:active={variant.id === $activeVariantId}
+            on:click={() => chooseVariant(variant.id)}
+          >
+            {variant.name}
+          </button>
+        {/each}
+      </div>
+      <p class="variant-description">{selectedVariant.description}</p>
     </section>
+
+    <section class="parameters-section">
+      <h2>Parameters</h2>
+      {#if parameterDefs.length === 0}
+        <p>No adjustable parameters for this generator.</p>
+      {:else}
+        {#each parameterDefs as param (param.id)}
+          <div class="parameter-control">
+            <label>
+              <span class="param-label">{param.label}</span>
+              {#if param.type === 'range'}
+                <input
+                  type="range"
+                  min={param.min}
+                  max={param.max}
+                  step={param.step}
+                  value={parameters[param.id] ?? param.defaultValue}
+                  on:input={(event) =>
+                    onParameterChange(param.id, Number(event.currentTarget.value))}
+                />
+              {:else}
+                <input
+                  type="number"
+                  min={param.min}
+                  max={param.max}
+                  step={param.step}
+                  value={parameters[param.id] ?? param.defaultValue}
+                  on:change={(event) =>
+                    onParameterChange(param.id, Number(event.currentTarget.value))}
+                />
+              {/if}
+              <span class="param-value">
+                {displayParameterValue(param, parameters[param.id] ?? param.defaultValue)}
+              </span>
+            </label>
+            {#if param.description}
+              <p class="param-help">{param.description}</p>
+            {/if}
+          </div>
+        {/each}
+      {/if}
+    </section>
+
+    {#if showBrushOverlay}
+      <section class="brush-controls">
+        <h2>Brush sculpting</h2>
+        <div class="mode-row">
+          {#each ['raise', 'lower', 'flatten', 'water'] as mode}
+            <button
+              type="button"
+              class:active={brushState.mode === mode}
+              on:click={() => setBrushMode(mode)}
+            >
+              {mode}
+            </button>
+          {/each}
+        </div>
+        <label>
+          Brush size
+          <input
+            type="range"
+            min="4"
+            max="160"
+            step="2"
+            value={brushState.size}
+            on:input={(event) => setBrushSize(Number(event.currentTarget.value))}
+          />
+          <span>{Math.round(brushState.size)}</span>
+        </label>
+        <label>
+          Intensity
+          <input
+            type="range"
+            min="0.01"
+            max="0.2"
+            step="0.01"
+            value={brushState.strength}
+            on:input={(event) => setBrushStrength(Number(event.currentTarget.value))}
+          />
+          <span>{brushState.strength.toFixed(2)}</span>
+        </label>
+        <label>
+          Target height
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            value={brushState.targetHeight}
+            on:input={(event) => setBrushTargetHeight(Number(event.currentTarget.value))}
+          />
+          <span>{brushState.targetHeight.toFixed(2)}</span>
+        </label>
+      </section>
+    {/if}
 
     <section>
       <h2>Summary</h2>
@@ -725,6 +965,9 @@
     background: #111f33;
     overflow-y: auto;
     border-left: 1px solid rgba(148, 163, 184, 0.1);
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
   }
 
   header h1 {
@@ -733,55 +976,206 @@
   }
 
   header p {
-    margin: 0 0 1.5rem;
+    margin: 0;
     color: rgba(226, 232, 240, 0.7);
   }
 
-  section {
-    margin-bottom: 1.75rem;
+  .control-panel section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
   }
 
-  label {
+  .base-controls label,
+  .brush-controls label,
+  .parameters-section label {
     display: flex;
     flex-direction: column;
     gap: 0.35rem;
-    margin-bottom: 1rem;
-    font-size: 0.9rem;
+    font-size: 0.85rem;
+    color: rgba(226, 232, 240, 0.95);
   }
 
-  input[type='number'] {
-    padding: 0.5rem;
-    border-radius: 0.4rem;
-    border: 1px solid rgba(148, 163, 184, 0.4);
-    background: rgba(15, 23, 42, 0.6);
-    color: inherit;
+  .base-controls span,
+  .brush-controls span,
+  .parameters-section .param-value {
+    font-variant-numeric: tabular-nums;
+    color: rgba(148, 163, 184, 0.85);
   }
 
-  input[type='range'] {
-    width: 100%;
-  }
-
-  button {
-    appearance: none;
-    border: none;
+  .control-panel input[type='number'] {
+    padding: 0.5rem 0.6rem;
     border-radius: 0.5rem;
-    padding: 0.6rem 1rem;
-    font-weight: 600;
-    cursor: pointer;
-    background: linear-gradient(120deg, #2563eb, #38bdf8);
-    color: #0b172a;
-    transition: opacity 0.15s ease;
+    border: 1px solid rgba(148, 163, 184, 0.3);
+    background: rgba(15, 23, 42, 0.6);
+    color: #f1f5f9;
   }
 
-  button:disabled {
-    opacity: 0.5;
-    cursor: default;
+  .control-panel input[type='range'] {
+    width: 100%;
   }
 
   .buttons {
     display: flex;
     gap: 0.75rem;
-    margin-top: 0.75rem;
+  }
+
+  .buttons button {
+    flex: 1;
+    padding: 0.65rem 1rem;
+    border-radius: 0.6rem;
+    border: none;
+    font-weight: 600;
+    cursor: pointer;
+    background: linear-gradient(120deg, #2563eb, #38bdf8);
+    color: #0b172a;
+    transition: transform 150ms ease, box-shadow 150ms ease, opacity 120ms ease;
+  }
+
+  .buttons button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .buttons button:not(:disabled):hover {
+    transform: translateY(-1px);
+    box-shadow: 0 12px 20px rgba(56, 189, 248, 0.25);
+  }
+
+  .dimension-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+  }
+
+  .dimension-grid input {
+    width: 100%;
+  }
+
+  .generator-family,
+  .variant-section,
+  .parameters-section,
+  .brush-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .family-grid {
+    display: grid;
+    gap: 0.5rem;
+  }
+
+  .family-grid button {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.35rem;
+    padding: 0.65rem 0.75rem;
+    border-radius: 0.6rem;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    background: rgba(15, 23, 42, 0.6);
+    color: #e2e8f0;
+    transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+  }
+
+  .family-grid button.active {
+    border-color: rgba(56, 189, 248, 0.6);
+    background: rgba(14, 165, 233, 0.18);
+    transform: translateY(-1px);
+  }
+
+  .family-name {
+    font-weight: 600;
+    font-size: 0.95rem;
+  }
+
+  .family-tags {
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: rgba(148, 163, 184, 0.85);
+  }
+
+  .family-tags span {
+    padding: 0.1rem 0.45rem;
+    border-radius: 9999px;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    background: rgba(30, 41, 59, 0.65);
+  }
+
+  .family-description,
+  .variant-description {
+    margin: 0;
+    font-size: 0.85rem;
+    color: rgba(226, 232, 240, 0.8);
+  }
+
+  .variant-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .variant-row button {
+    padding: 0.45rem 0.75rem;
+    border-radius: 0.75rem;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    background: rgba(15, 23, 42, 0.6);
+    color: #e2e8f0;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .variant-row button.active {
+    border-color: rgba(56, 189, 248, 0.6);
+    background: rgba(14, 165, 233, 0.2);
+  }
+
+  .parameters-section {
+    gap: 1rem;
+  }
+
+  .parameter-control {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    background: rgba(15, 23, 42, 0.5);
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    border-radius: 0.75rem;
+    padding: 0.75rem;
+  }
+
+  .param-help {
+    margin: 0;
+    font-size: 0.75rem;
+    color: rgba(148, 163, 184, 0.85);
+  }
+
+  .mode-row {
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  .mode-row button {
+    flex: 1;
+    padding: 0.45rem 0.6rem;
+    border-radius: 0.65rem;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    background: rgba(15, 23, 42, 0.6);
+    color: #e2e8f0;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .mode-row button.active {
+    border-color: rgba(56, 189, 248, 0.6);
+    background: rgba(14, 165, 233, 0.2);
   }
 
   .meta {
